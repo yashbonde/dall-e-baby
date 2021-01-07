@@ -10,6 +10,8 @@ from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 
+from vq_vae import VQVAE
+
 class CifarTrain(Dataset):
   def __init__(self, img_only = False):
     self.c100 = datasets.CIFAR100("./data", download = True)
@@ -27,7 +29,7 @@ class CifarTrain(Dataset):
 
   def __getitem__(self, i):
     # if i > len(c100) return from c10
-    if i > len(self.c100):
+    if i >= len(self.c100):
       d = self.c10[i - len(self.c100)]
       cls = self.c10.classes[d[1]]
       img = d[0]
@@ -84,12 +86,17 @@ class DiscreteVAE(nn.Module):
     self.codebook = nn.Embedding(num_tokens, embedding_dim)
     self.decoder = nn.Sequential(*decoder_layers)
         
-  def forward(self, x):
+  def forward(self, x, v = False):
     enc = self.encoder(x)
+    if v: print(enc)
     soft_one_hot = F.gumbel_softmax(enc, tau = 1.)
+    if v: print(soft_one_hot)
     hid_tokens = einsum("bnwh,nd->bdwh", soft_one_hot, self.codebook.weight)
+    if v: print(hid_tokens)
     out = self.decoder(hid_tokens)
+    if v: print(out)
     loss = F.mse_loss(out, x)
+    if v: print(loss)
     return soft_one_hot, loss
 
 
@@ -114,10 +121,10 @@ class DiscreteVAETrainer:
     train_data = self.train_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
-    optim = torch.optim.SGD(model.parameters(), lr = 0.001, momentum = 0.99, weight_decay = 1e-5)
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optim, [1000, 100000])
+    optim = torch.optim.Adam(model.parameters(), lr = 0.0001, weight_decay = 0.1)
 
     gs = 0
+    train_losses = [-1]
     model.train()
     for e in range(n_epochs):
       dl = DataLoader(
@@ -126,32 +133,49 @@ class DiscreteVAETrainer:
         pin_memory=True
       )
       pbar = trange(epoch_step)
-      train_losses = [-1]
+      v = False
       for d, e in zip(dl, pbar):
-        # d = trans(d)
         d = d.to(self.device)
         pbar.set_description(f"[TRAIN] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
-        _, loss = model(d)
+        # _, loss = model(d, v = v)
+        loss = model.loss_function(
+          *model(d)
+        )
         loss = loss.mean() # gather from multiple GPUs
+        if v:
+          exit()
+        if torch.isnan(loss).any():
+          print()
+          v = True
 
         loss.backward()
         optim.step()
-        lr_scheduler.step()
+        gs += 1
 
         train_losses.append(loss.item())
 
         if gs and gs % save_every == 0:
-          self.save_checkpoint(ckpt_path = "models/vae.pt")
+          self.save_checkpoint(ckpt_path = f"models/vae_{gs}.pt")
+    
+    print("EndSave")
+    self.save_checkpoint(ckpt_path = "models/vae_end.pt")
+    with open("models/vae_loss.txt", "w") as f:
+      f.write("\n".join([str(x) for x in train_losses]))
 
 
 if __name__ == "__main__":
-  model = DiscreteVAE(
-    hdim=128,
-    num_layers=6,
-    num_tokens=1024,
-    embedding_dim=256
+  # model = DiscreteVAE(
+  #   hdim=64,
+  #   num_layers=6,
+  #   num_tokens=1028,
+  #   embedding_dim=128
+  # )
+  model = VQVAE(
+    in_channels = 3, 
+    embedding_dim = 128,
+    num_embeddings = 512,
+    hidden_dims = 128
   )
-  print(model)
-
+  print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
-  trainer.train(32, 1)
+  trainer.train(32, 3)
