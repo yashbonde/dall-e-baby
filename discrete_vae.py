@@ -32,6 +32,7 @@ class CifarTrain(Dataset):
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
+        transforms.Lambda(lambda X: 2 * X - 1.)
     ])
 
   def __len__(self):
@@ -126,12 +127,12 @@ class DiscreteVAETrainer:
     print(f"Saving Model at {ckpt_path}")
     torch.save(raw_model.state_dict(), ckpt_path)
 
-  def train(self, bs, n_epochs, save_every=1000):
+  def train(self, bs, n_epochs, save_every=500):
     model = self.model
     train_data = self.train_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
-    optim = torch.optim.Adam(model.parameters(), lr = 0.0001, weight_decay = 0.1)
+    optim = torch.optim.SGD(model.parameters(), lr = 0.001)
 
     gs = 0
     train_losses = [-1]
@@ -156,8 +157,8 @@ class DiscreteVAETrainer:
           v = True
 
         # gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optim.step()
         gs += 1
 
@@ -181,11 +182,11 @@ if __name__ == "__main__":
   # )
   model = VQVAE(
     in_channels = 3, 
-    embedding_dim = 128,
+    embedding_dim = 64,
     num_embeddings = 512,
-    image_shape = 32
+    img_size = 32
   )
   set_seed(4)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
-  trainer.train(32, 3)
+  trainer.train(144, 30)

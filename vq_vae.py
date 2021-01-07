@@ -51,7 +51,7 @@ class VectorQuantizer(nn.Module):
     # Add the residue back to the latents
     quantized_latents = latents + (quantized_latents - latents).detach()
 
-    return quantized_latents.permute(0, 3, 1, 2).contiguous(), vq_loss  # [B x D x H x W]
+    return quantized_latents.permute(0, 3, 1, 2).contiguous(), vq_loss, encoding_inds  # [B x D x H x W]
 
 class ResidualLayer(nn.Module):
 
@@ -160,7 +160,7 @@ class VQVAE(nn.Module):
   def forward(self, input: Tensor, v = False):
     encoding = self.encoder(input)
     if v: print("encoding:", encoding.size())
-    quantized_inputs, vq_loss = self.vq_layer(encoding)
+    quantized_inputs, vq_loss, encoding_inds = self.vq_layer(encoding)
     if v: print("quantized_inputs:", quantized_inputs.size())
     recons = self.decoder(quantized_inputs)
     if v: print("recons:", recons.size())
@@ -168,4 +168,4 @@ class VQVAE(nn.Module):
     if v: print("recons_loss:", recons_loss)
     loss = recons_loss + vq_loss
     if v: print("loss:", loss)
-    return recons, loss, quantized_inputs
+    return recons, loss, encoding_inds
