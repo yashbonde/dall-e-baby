@@ -2,6 +2,8 @@
 code to train a discrete VAE
 """
 import torch
+import random
+import numpy as np
 from tqdm import trange
 from einops import rearrange
 from torch import nn, einsum
@@ -11,6 +13,14 @@ from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 
 from vq_vae import VQVAE
+
+
+def set_seed(seed):
+  if seed is not None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 class CifarTrain(Dataset):
   def __init__(self, img_only = False):
@@ -97,7 +107,7 @@ class DiscreteVAE(nn.Module):
     if v: print(out)
     loss = F.mse_loss(out, x)
     if v: print(loss)
-    return soft_one_hot, loss
+    return soft_one_hot, loss, out
 
 
 class DiscreteVAETrainer:
@@ -137,10 +147,7 @@ class DiscreteVAETrainer:
       for d, e in zip(dl, pbar):
         d = d.to(self.device)
         pbar.set_description(f"[TRAIN] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
-        # _, loss = model(d, v = v)
-        loss = model.loss_function(
-          *model(d)
-        )
+        _, loss, _ = model(d)
         loss = loss.mean() # gather from multiple GPUs
         if v:
           exit()
@@ -148,6 +155,8 @@ class DiscreteVAETrainer:
           print()
           v = True
 
+        # gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
         loss.backward()
         optim.step()
         gs += 1
@@ -174,8 +183,9 @@ if __name__ == "__main__":
     in_channels = 3, 
     embedding_dim = 128,
     num_embeddings = 512,
-    hidden_dims = 128
+    image_shape = 32
   )
+  set_seed(4)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
   trainer.train(32, 3)
