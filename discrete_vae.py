@@ -24,10 +24,10 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-class CifarTrain(Dataset):
-  def __init__(self, img_only = False):
-    self.c100 = datasets.CIFAR100("./data", download = True)
-    self.c10 = datasets.CIFAR10("./data", download = True)
+class Cifar(Dataset):
+  def __init__(self, train = True, img_only = False):
+    self.c100 = datasets.CIFAR100("./data", train=train, download=True)
+    self.c10 = datasets.CIFAR10("./data", train=train, download=True)
     self.img_only = img_only
     self.transform = transforms.Compose([
         transforms.Resize((32, 32)),
@@ -220,7 +220,8 @@ class VQVAE(nn.Module):
 class DiscreteVAETrainer:
   def __init__(self, model):
     self.model = model
-    self.train_dataset = CifarTrain(True)  # define the dataset
+    self.train_dataset = Cifar(train=True, img_only=True)  # define the train dataset
+    self.test_dataset = Cifar(train=False, img_only=True)  # define the test dataset
     self.device = "cpu"
     if torch.cuda.is_available():
       self.device = torch.cuda.current_device()
@@ -236,14 +237,19 @@ class DiscreteVAETrainer:
   def train(self, bs, n_epochs, lr, unk_id, save_every=500):
     model = self.model
     train_data = self.train_dataset
+    test_data = self.test_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
+    epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
+    prev_loss = 10000
+    no_improve_step = 0
     optim = torch.optim.Adam(model.parameters(), lr = lr)
 
     gs = 0
     train_losses = [-1]
     model.train()
     for epoch in range(n_epochs):
+      # ----- train for one complete epoch
       dl = DataLoader(
         dataset=train_data,
         batch_size=bs,
@@ -268,11 +274,40 @@ class DiscreteVAETrainer:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optim.step()
         gs += 1
-
         train_losses.append(loss.item())
 
-        if gs and gs % save_every == 0:
-          self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_{gs}.pt")
+      # ----- test at the end of each epoch
+      dl = DataLoader(
+        dataset=test_data,
+        batch_size=bs,
+        pin_memory=True
+      )
+      pbar = trange(epoch_step_test)
+      v = False
+      test_loss = []
+      for d, e in zip(dl, pbar):
+        d = d.to(self.device)
+        pbar.set_description(f"[TEST - {epoch}]")
+        _, loss, _ = model(d)
+        loss = loss.mean() # gather from multiple GPUs
+        if v:
+          exit()
+        if torch.isnan(loss).any():
+          print()
+          v = True
+        test_loss.append(loss.item())
+
+      test_loss = np.mean(test_loss)
+      wandb.log({"test_loss": test_loss})
+      if prev_loss > test_loss:
+        self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_{gs}.pt")
+        no_improve_step = 0
+      else:
+        no_improve_step += 1
+      
+      if no_improve_step == 3:
+        print("::: No Improvements in 3 epochs, break training")
+        break
     
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_end.pt")
