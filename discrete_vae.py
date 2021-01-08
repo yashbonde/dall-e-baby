@@ -1,7 +1,11 @@
 """
 code to train a discrete VAE
 """
-import wandb
+import os
+
+WANDB = os.getenv("WANDB")
+if WANDB:
+  import wandb
 import torch
 import random
 import argparse
@@ -217,6 +221,63 @@ class VQVAE(nn.Module):
     return recons, loss, encoding_inds
 
 
+class DiscreteVAE(nn.Module):
+  def __init__(
+      self,
+      hdim = 128,
+      num_layers = 6,
+      vocab = 1024,
+      embedding_dim = 256
+    ):
+    super().__init__()
+    encoder_layers = []
+    decoder_layers = []
+    for i in range(num_layers):
+      # now add encoder layer
+      enc_layer = nn.Conv2d(
+        in_channels = hdim if i > 0 else 3,
+        out_channels = hdim,
+        kernel_size = 3,
+        stride = 1,
+        padding = 0,
+        dilation = 1,
+      )
+      encoder_layers.extend([enc_layer, nn.ReLU()])
+      
+      # now add decoder layer
+      dec_layer = nn.ConvTranspose2d(
+        in_channels = embedding_dim if i == 0 else hdim,
+        out_channels = hdim,
+        kernel_size = 3,
+        stride = 1,
+        padding = 0,
+        dilation = 1,
+      )
+      decoder_layers.extend([dec_layer, nn.ReLU()])
+        
+    encoder_layers.append(nn.Conv2d(
+      in_channels = hdim,
+      out_channels = vocab,
+      kernel_size = 3
+    ))
+    decoder_layers.append(nn.ConvTranspose2d(
+      in_channels = hdim,
+      out_channels = 3,
+      kernel_size = 3,
+    ))
+    
+    self.encoder = nn.Sequential(*encoder_layers)
+    self.codebook = nn.Embedding(vocab, embedding_dim)
+    self.decoder = nn.Sequential(*decoder_layers)
+      
+  def forward(self, x):
+    enc = self.encoder(x)
+    soft_one_hot = F.gumbel_softmax(enc, tau = 1.)
+    hid_tokens = torch.einsum("bnwh,nd->bdwh", soft_one_hot, self.codebook.weight)
+    out = self.decoder(hid_tokens)
+    return out
+
+
 class DiscreteVAETrainer:
   def __init__(self, model):
     self.model = model
@@ -262,7 +323,8 @@ class DiscreteVAETrainer:
         pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss, _ = model(d)
         loss = loss.mean() # gather from multiple GPUs
-        wandb.log({"loss": loss.item()})
+        if WANDB:
+          wandb.log({"loss": loss.item()})
         if v:
           exit()
         if torch.isnan(loss).any():
@@ -298,7 +360,9 @@ class DiscreteVAETrainer:
         test_loss.append(loss.item())
 
       test_loss = np.mean(test_loss)
-      wandb.log({"test_loss": test_loss})
+      if WANDB:
+        wandb.log({"test_loss": test_loss})
+      print(":::: Loss:", test_loss)
       if prev_loss > test_loss:
         self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_{gs}.pt")
         no_improve_step = 0
@@ -323,14 +387,21 @@ if __name__ == "__main__":
   args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=300, help="minibatch size")
   args = args.parse_args()
-  model = VQVAE(
-    in_channels = 3, 
-    embedding_dim = args.embedding_dim,
-    num_embeddings=args.num_embeddings,
-    img_size = 32
+  # model = VQVAE(
+  #   in_channels = 3, 
+  #   embedding_dim = args.embedding_dim,
+  #   num_embeddings=args.num_embeddings,
+  #   img_size = 32
+  # )
+  model = DiscreteVAE(
+    hdim=args.embedding_dim,
+    num_layers=6,
+    num_tokens=args.num_embeddings,
+    embedding_dim=args.embedding_dim
   )
-  wandb.init(project = "vq-vae")
-  wandb.watch(model) # watch the model metrics
+  if WANDB:
+    wandb.init(project = "vq-vae")
+    wandb.watch(model) # watch the model metrics
   set_seed(4)
   local_run = str(uuid4())[:8]
   print(":: Local Run ID:", local_run)

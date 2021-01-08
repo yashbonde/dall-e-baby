@@ -1,6 +1,6 @@
 # dall-e-baby
 
-<img src="header.png">
+<img src="assets/header.png">
 
 OpenAI's [dall-e](https://openai.com/blog/dall-e/) is a kick ass model that takes in a natural language prompt and generates an images based on that. Now I cannot recreate the complete Dall-E so I make the baby version of it trained in CIFAR10-100 dataset. If Dall-E is picasso this is well... shit.
 
