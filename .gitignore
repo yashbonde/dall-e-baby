@@ -2,3 +2,4 @@
 *.ipynb
 data/
 __pycache__/
+wandb/

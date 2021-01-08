@@ -281,7 +281,7 @@ class DiscreteVAETrainer:
 
 
 if __name__ == "__main__":
-  args = argparse(description = "script to train the VectorQuantised-VAE")
+  args = argparse.ArgumentParser(description = "script to train the VectorQuantised-VAE")
   args.add_argument("--embedding_dim", type=int, default=64, help="embedding dimension to use")
   args.add_argument("--num_embeddings", type=int, default=512, help="number of embedding values to use")
   args.add_argument("--lr", type=float, default=0.001, help="learning rate for the model")
@@ -291,7 +291,7 @@ if __name__ == "__main__":
   model = VQVAE(
     in_channels = 3, 
     embedding_dim = args.embedding_dim,
-    num_embeddings = args.num_emebeddings,
+    num_embeddings=args.num_embeddings,
     img_size = 32
   )
   wandb.init(project = "vq-vae")
