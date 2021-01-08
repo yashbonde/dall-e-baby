@@ -295,6 +295,7 @@ if __name__ == "__main__":
     img_size = 32
   )
   wandb.init(project = "vq-vae")
+  wandb.watch(model) # watch the model metrics
   set_seed(4)
   local_run = str(uuid4())[:8]
   print(":: Local Run ID:", local_run)
