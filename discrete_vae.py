@@ -1,10 +1,13 @@
 """
 code to train a discrete VAE
 """
+import wandb
 import torch
 import random
+import argparse
 import numpy as np
 from torch import nn
+from uuid import uuid4
 from tqdm import trange
 import torch.nn.functional as F
 from torchvision import datasets
@@ -230,12 +233,12 @@ class DiscreteVAETrainer:
     print(f"Saving Model at {ckpt_path}")
     torch.save(raw_model.state_dict(), ckpt_path)
 
-  def train(self, bs, n_epochs, save_every=500):
+  def train(self, bs, n_epochs, lr, unk_id, save_every=500):
     model = self.model
     train_data = self.train_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
-    optim = torch.optim.Adam(model.parameters(), lr = 0.001)
+    optim = torch.optim.Adam(model.parameters(), lr = lr)
 
     gs = 0
     train_losses = [-1]
@@ -253,6 +256,7 @@ class DiscreteVAETrainer:
         pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss, _ = model(d)
         loss = loss.mean() # gather from multiple GPUs
+        wandb.log({"loss": loss.item()})
         if v:
           exit()
         if torch.isnan(loss).any():
@@ -268,28 +272,32 @@ class DiscreteVAETrainer:
         train_losses.append(loss.item())
 
         if gs and gs % save_every == 0:
-          self.save_checkpoint(ckpt_path = f"models/vae_{gs}.pt")
+          self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_{gs}.pt")
     
     print("EndSave")
-    self.save_checkpoint(ckpt_path = "models/vae_end.pt")
+    self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_end.pt")
     with open("models/vae_loss.txt", "w") as f:
       f.write("\n".join([str(x) for x in train_losses]))
 
 
 if __name__ == "__main__":
-  # model = DiscreteVAE(
-  #   hdim=64,
-  #   num_layers=6,
-  #   num_tokens=1028,
-  #   embedding_dim=128
-  # )
+  args = argparse(description = "script to train the VectorQuantised-VAE")
+  args.add_argument("--embedding_dim", type=int, default=64, help="embedding dimension to use")
+  args.add_argument("--num_embeddings", type=int, default=512, help="number of embedding values to use")
+  args.add_argument("--lr", type=float, default=0.001, help="learning rate for the model")
+  args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
+  args.add_argument("--n_epochs", type=int, default=300, help="minibatch size")
+  args = args.parse_args()
   model = VQVAE(
     in_channels = 3, 
-    embedding_dim = 64,
-    num_embeddings = 512,
+    embedding_dim = args.embedding_dim,
+    num_embeddings = args.num_emebeddings,
     img_size = 32
   )
+  wandb.init(project = "vq-vae")
   set_seed(4)
+  local_run = str(uuid4())[:8]
+  print(":: Local Run ID:", local_run)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
-  trainer.train(300, 50)
+  trainer.train(bs=args.batch_size, n_epochs=args.n_epochs, lr=args.lr, unk_id=local_run)
