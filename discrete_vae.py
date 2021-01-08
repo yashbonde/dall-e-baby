@@ -4,13 +4,15 @@ code to train a discrete VAE
 import torch
 import random
 import numpy as np
+from torch import nn
 from tqdm import trange
-from einops import rearrange
-from torch import nn, einsum
 import torch.nn.functional as F
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
+
+CIFAR_MEAN = [0.4913997551666284, 0.48215855929893703, 0.4465309133731618]
+CIFAR_STDS = [0.24703225141799082, 0.24348516474564, 0.26158783926049628]
 
 def set_seed(seed):
   if seed is not None:
@@ -28,8 +30,7 @@ class CifarTrain(Dataset):
         transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        transforms.Lambda(lambda X: 2 * X - 1.)
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STDS)
     ])
 
   def __len__(self):
@@ -76,8 +77,8 @@ class VectorQuantizer(nn.Module):
 
     # Compute L2 distance between latents and embedding weights
     dist = torch.sum(flat_latents ** 2, dim=1, keepdim=True) + \
-            torch.sum(self.embedding.weight ** 2, dim=1) - \
-            2 * torch.matmul(flat_latents, self.embedding.weight.t())  # [BHW x K]
+           torch.sum(self.embedding.weight ** 2, dim=1) - \
+           2 * torch.matmul(flat_latents, self.embedding.weight.t())  # [BHW x K]
 
     # Get the encoding that has the min distance
     encoding_inds = torch.argmin(dist, dim=1).unsqueeze(1)  # [BHW, 1]
@@ -103,25 +104,19 @@ class VectorQuantizer(nn.Module):
     return quantized_latents.permute(0, 3, 1, 2).contiguous(), vq_loss, encoding_inds  # [B x D x H x W]
 
 class ResidualLayer(nn.Module):
+  def __init__( self, in_channels, out_channels):
+    super(ResidualLayer, self).__init__()
+    self.resblock = nn.Sequential(
+      nn.Conv2d(in_channels, out_channels,kernel_size=3, padding=1, bias=False),
+      nn.ReLU(True),
+      nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False)
+    )
 
-    def __init__(
-      self,
-      in_channels: int,
-      out_channels: int
-    ):
-        super(ResidualLayer, self).__init__()
-        self.resblock = nn.Sequential(
-          nn.Conv2d(in_channels, out_channels,kernel_size=3, padding=1, bias=False),
-          nn.ReLU(True),
-          nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False)
-        )
-
-    def forward(self, input):
-        return input + self.resblock(input)
+  def forward(self, input):
+    return input + self.resblock(input)
 
 
 class VQVAE(nn.Module):
-
   def __init__(self,
               in_channels: int,
               embedding_dim: int,
@@ -219,61 +214,6 @@ class VQVAE(nn.Module):
     return recons, loss, encoding_inds
 
 
-class DiscreteVAE(nn.Module):
-  def __init__(self, hdim = 128, num_layers = 6, num_tokens = 1024, embedding_dim = 256):
-    super().__init__()
-    encoder_layers = []
-    decoder_layers = []
-    for i in range(num_layers):
-      enc_layer = nn.Conv2d(
-        in_channels = hdim if i > 0 else 3,
-        out_channels = hdim,
-        kernel_size = 4,
-        stride = 1,
-        padding = 0,
-        dilation = 1,
-      )
-      encoder_layers.extend([enc_layer, nn.ReLU()])
-      
-      dec_layer = nn.ConvTranspose2d(
-        in_channels = embedding_dim if i == 0 else hdim,
-        out_channels = hdim,
-        kernel_size = 4,
-        stride = 1,
-        padding = 0,
-        dilation = 1,
-      )
-      decoder_layers.extend([dec_layer, nn.ReLU()])
-        
-    encoder_layers.append(nn.Conv2d(
-      in_channels = hdim,
-      out_channels = num_tokens,
-      kernel_size = 3
-    ))
-    decoder_layers.append(nn.ConvTranspose2d(
-      in_channels = hdim,
-      out_channels = 3,
-      kernel_size = 3,
-    ))
-    
-    self.encoder = nn.Sequential(*encoder_layers)
-    self.codebook = nn.Embedding(num_tokens, embedding_dim)
-    self.decoder = nn.Sequential(*decoder_layers)
-        
-  def forward(self, x, v = False):
-    enc = self.encoder(x)
-    if v: print(enc)
-    soft_one_hot = F.gumbel_softmax(enc, tau = 1.)
-    if v: print(soft_one_hot)
-    hid_tokens = einsum("bnwh,nd->bdwh", soft_one_hot, self.codebook.weight)
-    if v: print(hid_tokens)
-    out = self.decoder(hid_tokens)
-    if v: print(out)
-    loss = F.mse_loss(out, x)
-    if v: print(loss)
-    return soft_one_hot, loss, out
-
-
 class DiscreteVAETrainer:
   def __init__(self, model):
     self.model = model
@@ -295,12 +235,12 @@ class DiscreteVAETrainer:
     train_data = self.train_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
-    optim = torch.optim.SGD(model.parameters(), lr = 0.001)
+    optim = torch.optim.Adam(model.parameters(), lr = 0.001)
 
     gs = 0
     train_losses = [-1]
     model.train()
-    for e in range(n_epochs):
+    for epoch in range(n_epochs):
       dl = DataLoader(
         dataset=train_data,
         batch_size=bs,
@@ -310,7 +250,7 @@ class DiscreteVAETrainer:
       v = False
       for d, e in zip(dl, pbar):
         d = d.to(self.device)
-        pbar.set_description(f"[TRAIN] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
+        pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss, _ = model(d)
         loss = loss.mean() # gather from multiple GPUs
         if v:
@@ -352,4 +292,4 @@ if __name__ == "__main__":
   set_seed(4)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
-  trainer.train(144, 30)
+  trainer.train(300, 50)
