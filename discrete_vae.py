@@ -9,7 +9,6 @@ import numpy as np
 from glob import glob
 from PIL import Image
 from uuid import uuid4
-from torchvision.transforms.transforms import CenterCrop
 from tqdm import trange
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -65,10 +64,16 @@ class Cifar(Dataset):
 
 
 class FlikrDataset(Dataset):
-  def __init__(self, flikr_folder, res=102):
-    self.files = glob(flikr_folder + "/**/*.jpg")
+  def __init__(self, flikr_folder, imagenet_folder, train = True, train_split=0.98, res=102):
+    all_files = glob(flikr_folder + "/**/*.jpg")
+    all_files += glob(imagenet_folder + "/**/*.jpg")
+    np.random.shuffle(all_files)
+    train_idx = int(train_split*len(all_files))
+    if train:
+        self.files = all_files[:train_idx]
+    else:
+        self.files = all_files[train_idx:]
     self.t = transforms.Compose([
-        transforms.CenterCrop(res),
         transforms.Resize((res, res)),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
@@ -79,7 +84,7 @@ class FlikrDataset(Dataset):
     return len(self.files)
     
   def __getitem__(self, i):
-    return self.t(Image.open(self.files[i]))
+    return self.t(Image.open(self.files[i]).convert('RGB'))
 
 
 # ------ VQVAE model ------- #
@@ -301,39 +306,47 @@ class DiscreteVAE(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-  def __init__(self, hidden_dim, out_channels):
+  def __init__(self, hidden_dim, out_channels, act = "relu"):
     super().__init__()
     self.resblock = nn.Sequential(
       nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
       nn.LeakyReLU(inplace=True),
       nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
     )
-    self.down_conv = nn.Sequential(
-      nn.Conv2d(hidden_dim, out_channels, kernel_size=3, stride=2),
-      nn.LeakyReLU(inplace = True)
-    )
+    self.down_conv = nn.Conv2d(hidden_dim, out_channels, kernel_size=3, stride=2)
+    if act == "relu":
+      self.act = nn.LeakyReLU(inplace = True)
+    else:
+      self.act = None
 
   def forward(self, x):
     out = x + self.resblock(x)
     out = self.down_conv(out)
+    if self.act is not None:
+      out = self.act(out)
     return out
   
 class DecoderBlock(nn.Module):
-  def __init__(self, hidden_dim, out_channels):
+  def __init__(self, hidden_dim, out_channels, act = "relu"):
     super().__init__()
     self.resblock = nn.Sequential(
       nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
       nn.LeakyReLU(inplace=True),
       nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
     )
-    self.down_conv = nn.Sequential(
-      nn.ConvTranspose2d(hidden_dim, out_channels, kernel_size=4, stride=2),
-      nn.LeakyReLU(inplace = True)
-    )
+    self.down_conv = nn.ConvTranspose2d(hidden_dim, out_channels, kernel_size=4, stride=2)
+    if act == "relu":
+      self.act = nn.LeakyReLU(inplace = True)
+    elif act == "tanh":
+      self.act = nn.Tanh()
+    else:
+      self.act = None
 
   def forward(self, x):
     out = x + self.resblock(x)
     out = self.down_conv(out)
+    if self.act is not None:
+      out = self.act(out)
     return out
 
 class DiscreteResidualVAE(nn.Module):
@@ -350,9 +363,8 @@ class DiscreteResidualVAE(nn.Module):
         hidden_dim=hidden_dim,
         out_channels=hidden_dim
       ))
-    encoder.append(EncoderBlock(hidden_dim, num_embeds))
-    decoder.append(DecoderBlock(hidden_dim, in_channels))
-    decoder.append(nn.Tanh())
+    encoder.append(EncoderBlock(hidden_dim, num_embeds, None))
+    decoder.append(DecoderBlock(hidden_dim, in_channels, "tanh"))
     
     self.encoder = nn.Sequential(*encoder)
     self.quantised = nn.Embedding(num_embeds, hidden_dim)
@@ -360,7 +372,9 @@ class DiscreteResidualVAE(nn.Module):
     
   def forward(self, x):
     out = self.encoder(x)
-    out = F.gumbel_softmax(out, tau = 1., dim = -1)
+    # the output from encoder has shape [bnhw] and so we must perform
+    # softmax over n (number of embeddings/vocab size) and so dim = 1
+    out = F.gumbel_softmax(out, tau = 1., dim = 1)
     out = einsum("bnhw,nd->bdhw", out, self.quantised.weight)
     out = self.decoder(out)
     loss = F.mse_loss(x, out)
@@ -391,6 +405,7 @@ class DiscreteVAETrainer:
     train_data = self.train_dataset
     test_data = self.test_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
+    save_every = min([save_every, epoch_step])
     num_steps = epoch_step * n_epochs
     prev_loss = 10000
     no_improve_step = 0
@@ -428,7 +443,7 @@ class DiscreteVAETrainer:
         gs += 1
         train_losses.append(loss.item())
         
-        if test_data == None and gs and gs % save_every == 0:
+        if gs and gs % save_every == 0:
           self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
 
       # ----- test at the end of each epoch
@@ -480,13 +495,15 @@ if __name__ == "__main__":
   args = argparse.ArgumentParser(description = "script to train the VectorQuantised-VAE")
   args.add_argument("--embedding_dim", type=int, default=64, help="embedding dimension to use")
   args.add_argument("--num_embeddings", type=int, default=512, help="number of embedding values to use")
-  args.add_argument("--lr", type=float, default=0.001, help="learning rate for the model")
+  args.add_argument("--lr", type=float, default=0.0001, help="learning rate for the model")
   args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
-  args.add_argument("--n_epochs", type=int, default=300, help="minibatch size")
+  args.add_argument("--n_epochs", type=int, default=30, help="minibatch size")
   args.add_argument("--model", type=str, default="res", choices=["res", "vqvae", "disvae"], help="minibatch size")
+  args.add_argument("--dataset", type=str, default="flikr", choices=["flikr", "cifar"], help="minibatch size")
   args = args.parse_args()
 
   if args.model == "vqvae":
+    print(":: Building VQVAE")
     model = VQVAE(
       in_channels = 3, 
       embedding_dim = args.embedding_dim,
@@ -494,6 +511,7 @@ if __name__ == "__main__":
       img_size = 32
     )
   elif args.model == "disvae":
+    print(":: Building DiscreteVAE")
     model = DiscreteVAE(
       hdim=args.embedding_dim,
       num_layers=6,
@@ -501,20 +519,35 @@ if __name__ == "__main__":
       embedding_dim=args.embedding_dim
     )
   elif args.model == "res":
+    print(":: Building DiscreteResidualVAE")
     model = DiscreteResidualVAE(
       hidden_dim=args.embedding_dim,
-      num_layers=3,
+      n_layers=3,
       num_embeds=args.num_embeddings,
     )
   else:
     raise ValueError("model should be one of `res`, `disvae`, `vqvae`")
+    
+  cifar = False
+  if args.dataset == "flikr":
+    train = FlikrDataset("../flickr30k_images/", "../ImageNet-Datasets-Downloader/data/")
+    test = FlikrDataset("../flickr30k_images/", "../ImageNet-Datasets-Downloader/data/", train = False)
+    print(":: Loaded FlikrDataset", len(train), len(test))
+    if len(train) == 0:
+        cifar = True
+    
+  if args.dataset == "cifar" or cifar:
+    print(":: Loading cifar dataset")
+    train = Cifar(True, True)
+    test = Cifar(False, True)
 
+  local_run = ""
   if WANDB:
     wandb.init(project = "vq-vae")
     wandb.watch(model) # watch the model metrics
+    local_run = str(uuid4())[:8] + "_"
+    print(":: Local Run ID:", local_run)
   set_seed(4)
-  local_run = str(uuid4())[:8] + "_"
-  print(":: Local Run ID:", local_run)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
-  trainer = DiscreteVAETrainer(model)
+  trainer = DiscreteVAETrainer(model, train, test)
   trainer.train(bs=args.batch_size, n_epochs=args.n_epochs, lr=args.lr, unk_id=local_run)
