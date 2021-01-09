@@ -2,21 +2,24 @@
 code to train a discrete VAE
 """
 import os
-
-WANDB = os.getenv("WANDB")
-if WANDB:
-  import wandb
 import torch
 import random
 import argparse
 import numpy as np
-from torch import nn
+from glob import glob
+from PIL import Image
 from uuid import uuid4
+from torchvision.transforms.transforms import CenterCrop
 from tqdm import trange
+from torch import nn, einsum
 import torch.nn.functional as F
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
+
+WANDB = os.getenv("WANDB")
+if WANDB:
+  import wandb
 
 CIFAR_MEAN = [0.4913997551666284, 0.48215855929893703, 0.4465309133731618]
 CIFAR_STDS = [0.24703225141799082, 0.24348516474564, 0.26158783926049628]
@@ -59,6 +62,25 @@ class Cifar(Dataset):
       return img
     else:
       return img, cls
+
+
+class FlikrDataset(Dataset):
+  def __init__(self, flikr_folder, res=102):
+    self.files = glob(flikr_folder + "/**/*.jpg")
+    self.t = transforms.Compose([
+        transforms.CenterCrop(res),
+        transforms.Resize((res, res)),
+        transforms.ToTensor(),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.Normalize(CIFAR_MEAN, CIFAR_STDS)
+    ])
+    
+  def __len__(self):
+    return len(self.files)
+    
+  def __getitem__(self, i):
+    return self.t(Image.open(self.files[i]))
+
 
 # ------ VQVAE model ------- #
 # https://github.com/AntixK/PyTorch-VAE/blob/master/models/vq_vae.py
@@ -278,11 +300,80 @@ class DiscreteVAE(nn.Module):
     return out
 
 
+class EncoderBlock(nn.Module):
+  def __init__(self, hidden_dim, out_channels):
+    super().__init__()
+    self.resblock = nn.Sequential(
+      nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+      nn.LeakyReLU(inplace=True),
+      nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
+    )
+    self.down_conv = nn.Sequential(
+      nn.Conv2d(hidden_dim, out_channels, kernel_size=3, stride=2),
+      nn.LeakyReLU(inplace = True)
+    )
+
+  def forward(self, x):
+    out = x + self.resblock(x)
+    out = self.down_conv(out)
+    return out
+  
+class DecoderBlock(nn.Module):
+  def __init__(self, hidden_dim, out_channels):
+    super().__init__()
+    self.resblock = nn.Sequential(
+      nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+      nn.LeakyReLU(inplace=True),
+      nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
+    )
+    self.down_conv = nn.Sequential(
+      nn.ConvTranspose2d(hidden_dim, out_channels, kernel_size=4, stride=2),
+      nn.LeakyReLU(inplace = True)
+    )
+
+  def forward(self, x):
+    out = x + self.resblock(x)
+    out = self.down_conv(out)
+    return out
+
+class DiscreteResidualVAE(nn.Module):
+  def __init__(self, hidden_dim, n_layers, num_embeds, in_channels = 3):
+    super().__init__()
+    encoder = []
+    decoder = []
+    for i in range(n_layers-1):
+      encoder.append(EncoderBlock(
+        hidden_dim = in_channels if i == 0 else hidden_dim,
+        out_channels = hidden_dim
+      ))
+      decoder.append(DecoderBlock(
+        hidden_dim=hidden_dim,
+        out_channels=hidden_dim
+      ))
+    encoder.append(EncoderBlock(hidden_dim, num_embeds))
+    decoder.append(DecoderBlock(hidden_dim, in_channels))
+    decoder.append(nn.Tanh())
+    
+    self.encoder = nn.Sequential(*encoder)
+    self.quantised = nn.Embedding(num_embeds, hidden_dim)
+    self.decoder = nn.Sequential(*decoder)
+    
+  def forward(self, x):
+    out = self.encoder(x)
+    out = F.gumbel_softmax(out, tau = 1., dim = -1)
+    out = einsum("bnhw,nd->bdhw", out, self.quantised.weight)
+    out = self.decoder(out)
+    loss = F.mse_loss(x, out)
+    return None, loss, out
+
+# ------- trainer 
 class DiscreteVAETrainer:
-  def __init__(self, model):
+  def __init__(self, model, train, test = None):
     self.model = model
-    self.train_dataset = Cifar(train=True, img_only=True)  # define the train dataset
-    self.test_dataset = Cifar(train=False, img_only=True)  # define the test dataset
+    # self.train_dataset = Cifar(train=True, img_only=True)  # define the train dataset
+    # self.test_dataset = Cifar(train=False, img_only=True)  # define the test dataset
+    self.train_dataset = train
+    self.test_dataset = test
     self.device = "cpu"
     if torch.cuda.is_available():
       self.device = torch.cuda.current_device()
@@ -300,7 +391,6 @@ class DiscreteVAETrainer:
     train_data = self.train_dataset
     test_data = self.test_dataset
     epoch_step = len(train_data) // bs + int(len(train_data) % bs != 0)
-    epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
     num_steps = epoch_step * n_epochs
     prev_loss = 10000
     no_improve_step = 0
@@ -337,13 +427,20 @@ class DiscreteVAETrainer:
         optim.step()
         gs += 1
         train_losses.append(loss.item())
+        
+        if test_data == None and gs and gs % save_every == 0:
+          self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
 
       # ----- test at the end of each epoch
+      if test_data == None:
+        # there is no testing data so skip this partxs
+        continue
       dl = DataLoader(
         dataset=test_data,
         batch_size=bs,
         pin_memory=True
       )
+      epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
       pbar = trange(epoch_step_test)
       v = False
       test_loss = []
@@ -364,7 +461,7 @@ class DiscreteVAETrainer:
         wandb.log({"test_loss": test_loss})
       print(":::: Loss:", test_loss)
       if prev_loss > test_loss:
-        self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_{gs}.pt")
+        self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
         no_improve_step = 0
       else:
         no_improve_step += 1
@@ -374,7 +471,7 @@ class DiscreteVAETrainer:
         break
     
     print("EndSave")
-    self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}_end.pt")
+    self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}end.pt")
     with open("models/vae_loss.txt", "w") as f:
       f.write("\n".join([str(x) for x in train_losses]))
 
@@ -386,24 +483,37 @@ if __name__ == "__main__":
   args.add_argument("--lr", type=float, default=0.001, help="learning rate for the model")
   args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=300, help="minibatch size")
+  args.add_argument("--model", type=str, default="res", choices=["res", "vqvae", "disvae"], help="minibatch size")
   args = args.parse_args()
-  # model = VQVAE(
-  #   in_channels = 3, 
-  #   embedding_dim = args.embedding_dim,
-  #   num_embeddings=args.num_embeddings,
-  #   img_size = 32
-  # )
-  model = DiscreteVAE(
-    hdim=args.embedding_dim,
-    num_layers=6,
-    num_tokens=args.num_embeddings,
-    embedding_dim=args.embedding_dim
-  )
+
+  if args.model == "vqvae":
+    model = VQVAE(
+      in_channels = 3, 
+      embedding_dim = args.embedding_dim,
+      num_embeddings=args.num_embeddings,
+      img_size = 32
+    )
+  elif args.model == "disvae":
+    model = DiscreteVAE(
+      hdim=args.embedding_dim,
+      num_layers=6,
+      num_tokens=args.num_embeddings,
+      embedding_dim=args.embedding_dim
+    )
+  elif args.model == "res":
+    model = DiscreteResidualVAE(
+      hidden_dim=args.embedding_dim,
+      num_layers=3,
+      num_embeds=args.num_embeddings,
+    )
+  else:
+    raise ValueError("model should be one of `res`, `disvae`, `vqvae`")
+
   if WANDB:
     wandb.init(project = "vq-vae")
     wandb.watch(model) # watch the model metrics
   set_seed(4)
-  local_run = str(uuid4())[:8]
+  local_run = str(uuid4())[:8] + "_"
   print(":: Local Run ID:", local_run)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model)
