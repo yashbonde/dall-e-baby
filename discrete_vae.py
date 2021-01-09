@@ -437,23 +437,22 @@ class DiscreteVAETrainer:
         optim.step()
         gs += 1
         train_losses.append(loss.item())
-        
-        if gs and gs % save_every == 0:
-          self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
 
         # ----- test condition
         if test_data != None and gs and gs % test_every == 0:
+          print(":: Entering Testing Mode")
           dl = DataLoader(
             dataset=test_data,
             batch_size=bs,
             pin_memory=True
           )
-          epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
-          pbar = trange(epoch_step_test)
+          model = model.eval() # convert model to testing mode
+          epoch_step_test = len(test_data) // bs + int(len(test_data) % bs != 0)
+          pbar_test = trange(epoch_step_test)
           test_loss = []
-          for d, e in zip(dl, pbar):
+          for d, e in zip(dl, pbar_test):
             d = d.to(self.device)
-            pbar.set_description(f"[TEST - {epoch}]")
+            pbar_test.set_description(f"[TEST - {epoch}]")
             _, loss, _ = model(d)
             loss = loss.mean() # gather from multiple GPUs
             test_loss.append(loss.item())
@@ -468,15 +467,26 @@ class DiscreteVAETrainer:
             no_improve_step = 0
           else:
             no_improve_step += 1
-          
+
           if no_improve_step == 3:
             print("::: No Improvements in 3 epochs, break training")
-            break     
+            break
+          model = model.train()  # convert model back to training mode
     
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}end.pt")
     with open("models/vae_loss.txt", "w") as f:
       f.write("\n".join([str(x) for x in train_losses]))
+
+
+def init_weights(module):
+  if isinstance(module, (nn.Linear, nn.Embedding)):
+    module.weight.data.normal_(mean=0.0, std=0.02)
+    if isinstance(module, nn.Linear) and module.bias is not None:
+      module.bias.data.zero_()
+  elif isinstance(module, (nn.LayerNorm)):
+    module.bias.data.zero_()
+    module.weight.data.fill_(1.0)
 
 
 if __name__ == "__main__":
@@ -515,6 +525,8 @@ if __name__ == "__main__":
     )
   else:
     raise ValueError("model should be one of `res`, `disvae`, `vqvae`")
+
+  model.apply(init_weights) # initialise weights
     
   cifar = False
   if args.dataset == "flikr":
