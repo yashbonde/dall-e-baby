@@ -400,7 +400,7 @@ class DiscreteVAETrainer:
     print(f"Saving Model at {ckpt_path}")
     torch.save(raw_model.state_dict(), ckpt_path)
 
-  def train(self, bs, n_epochs, lr, unk_id, save_every=500):
+  def train(self, bs, n_epochs, lr, unk_id, save_every=500, test_every = 500):
     model = self.model
     train_data = self.train_dataset
     test_data = self.test_dataset
@@ -430,11 +430,6 @@ class DiscreteVAETrainer:
         loss = loss.mean() # gather from multiple GPUs
         if WANDB:
           wandb.log({"loss": loss.item()})
-        if v:
-          exit()
-        if torch.isnan(loss).any():
-          print()
-          v = True
 
         # gradient clipping
         loss.backward()
@@ -446,44 +441,37 @@ class DiscreteVAETrainer:
         if gs and gs % save_every == 0:
           self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
 
-      # ----- test at the end of each epoch
-      if test_data == None:
-        # there is no testing data so skip this partxs
-        continue
-      dl = DataLoader(
-        dataset=test_data,
-        batch_size=bs,
-        pin_memory=True
-      )
-      epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
-      pbar = trange(epoch_step_test)
-      v = False
-      test_loss = []
-      for d, e in zip(dl, pbar):
-        d = d.to(self.device)
-        pbar.set_description(f"[TEST - {epoch}]")
-        _, loss, _ = model(d)
-        loss = loss.mean() # gather from multiple GPUs
-        if v:
-          exit()
-        if torch.isnan(loss).any():
-          print()
-          v = True
-        test_loss.append(loss.item())
+        # ----- test condition
+        if test_data != None and gs and gs % test_every == 0:
+          dl = DataLoader(
+            dataset=test_data,
+            batch_size=bs,
+            pin_memory=True
+          )
+          epoch_step_test = len(test_data) // bs + int(len(train_data) % bs != 0)
+          pbar = trange(epoch_step_test)
+          test_loss = []
+          for d, e in zip(dl, pbar):
+            d = d.to(self.device)
+            pbar.set_description(f"[TEST - {epoch}]")
+            _, loss, _ = model(d)
+            loss = loss.mean() # gather from multiple GPUs
+            test_loss.append(loss.item())
 
-      test_loss = np.mean(test_loss)
-      if WANDB:
-        wandb.log({"test_loss": test_loss})
-      print(":::: Loss:", test_loss)
-      if prev_loss > test_loss:
-        self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
-        no_improve_step = 0
-      else:
-        no_improve_step += 1
-      
-      if no_improve_step == 3:
-        print("::: No Improvements in 3 epochs, break training")
-        break
+          test_loss = np.mean(test_loss)
+          if WANDB:
+            wandb.log({"test_loss": test_loss})
+
+          print(":::: Loss:", test_loss)
+          if prev_loss > test_loss:
+            self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
+            no_improve_step = 0
+          else:
+            no_improve_step += 1
+          
+          if no_improve_step == 3:
+            print("::: No Improvements in 3 epochs, break training")
+            break     
     
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}end.pt")
