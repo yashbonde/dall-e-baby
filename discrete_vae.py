@@ -57,7 +57,7 @@ class Cifar(Dataset):
       cls = self.c100.classes[d[1]]
       img = d[0]
     img = self.transform(img)
-    
+
     if self.img_only:
       return img
     else:
@@ -69,24 +69,27 @@ class BabyDallEDataset(Dataset):
       self,
       flickr_folder,
       imagenet_folder,
-      coco_2014_folder,
-      coco_2017_folder,
+      coco_train_folder,
+      coco_val_folder,
+      coco_unlabeled,
       train = True,
       train_split=0.98,
       res=102
     ):
     flikr=glob(flickr_folder + "/**/*.jpg")
     imagenet=glob(imagenet_folder + "/**/*.jpg")
-    coco_2014=glob(coco_2014_folder + "/*.jpg")
-    coco_2017=glob(coco_2017_folder + "/*.jpg")
+    coco_train=glob(coco_train_folder + "/*.jpg")
+    coco_val=glob(coco_val_folder + "/*.jpg")
+    coco_u=glob(coco_unlabeled+"/*.jpg")
     self.meta={
       "flikr": len(flikr),
       "imagenet": len(imagenet),
-      "coco_2014": len(coco_2014),
-      "coco_2017": len(coco_2017),
-      "total": len(flikr)+len(imagenet)+len(coco_2014)+len(coco_2017)
+      "coco_train": len(coco_train),
+      "coco_val": len(coco_val),
+      "coco_u":len(coco_u),
+      "total": len(flikr)+len(imagenet)+len(coco_train)+len(coco_val)+len(coco_u)
     }
-    all_files=flikr+imagenet+coco_2014+coco_2017
+    all_files=flikr+imagenet+coco_train+coco_val+coco_u
     np.random.shuffle(all_files)
     train_idx=int(train_split*len(all_files))
     if train:
@@ -94,18 +97,18 @@ class BabyDallEDataset(Dataset):
     else:
         self.files=all_files[train_idx:]
     self.t=transforms.Compose([
-        transforms.Resize((res, res)),
+        transforms.Resize((206, 206)),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.Normalize(CIFAR_MEAN, CIFAR_STDS)
+        transforms.Lambda(lambda x: (x-0.5)*2.0)
     ])
 
   def __repr__(self):
     return "<BabyDallEDataset " + "|".join([f"{k}:{v}" for k,v in self.meta.items()]) + ">"
-    
+
   def __len__(self):
     return len(self.files)
-    
+
   def __getitem__(self, i):
     return self.t(Image.open(self.files[i]).convert('RGB'))
 
@@ -293,7 +296,7 @@ class DiscreteVAE(nn.Module):
         dilation = 1,
       )
       encoder_layers.extend([enc_layer, nn.ReLU()])
-      
+
       # now add decoder layer
       dec_layer = nn.ConvTranspose2d(
         in_channels = embedding_dim if i == 0 else hdim,
@@ -304,7 +307,7 @@ class DiscreteVAE(nn.Module):
         dilation = 1,
       )
       decoder_layers.extend([dec_layer, nn.ReLU()])
-        
+
     encoder_layers.append(nn.Conv2d(
       in_channels = hdim,
       out_channels = vocab,
@@ -315,11 +318,11 @@ class DiscreteVAE(nn.Module):
       out_channels = 3,
       kernel_size = 3,
     ))
-    
+
     self.encoder = nn.Sequential(*encoder_layers)
     self.codebook = nn.Embedding(vocab, embedding_dim)
     self.decoder = nn.Sequential(*decoder_layers)
-      
+
   def forward(self, x):
     enc = self.encoder(x)
     soft_one_hot = F.gumbel_softmax(enc, tau = 1.)
@@ -336,6 +339,7 @@ class EncoderBlock(nn.Module):
       nn.LeakyReLU(inplace=True),
       nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
     )
+    self.bn = nn.BatchNorm2d(hidden_dim)
     self.down_conv = nn.Conv2d(hidden_dim, out_channels, kernel_size=3, stride=2)
     if act == "relu":
       self.act = nn.LeakyReLU(inplace = True)
@@ -343,12 +347,12 @@ class EncoderBlock(nn.Module):
       self.act = None
 
   def forward(self, x):
-    out = x + self.resblock(x)
+    out = self.bn(x + self.resblock(x))
     out = self.down_conv(out)
     if self.act is not None:
       out = self.act(out)
     return out
-  
+
 class DecoderBlock(nn.Module):
   def __init__(self, hidden_dim, out_channels, act = "relu"):
     super().__init__()
@@ -357,7 +361,8 @@ class DecoderBlock(nn.Module):
       nn.LeakyReLU(inplace=True),
       nn.ConvTranspose2d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
     )
-    self.down_conv = nn.ConvTranspose2d(hidden_dim, out_channels, kernel_size=4, stride=2)
+    self.bn = nn.BatchNorm2d(hidden_dim)
+    self.up_conv = nn.ConvTranspose2d(hidden_dim, out_channels, kernel_size=4, stride=2)
     if act == "relu":
       self.act = nn.LeakyReLU(inplace = True)
     elif act == "tanh":
@@ -366,15 +371,16 @@ class DecoderBlock(nn.Module):
       self.act = None
 
   def forward(self, x):
-    out = x + self.resblock(x)
-    out = self.down_conv(out)
+    out = self.bn(x + self.resblock(x))
+    out = self.up_conv(out)
     if self.act is not None:
       out = self.act(out)
     return out
 
 class DiscreteResidualVAE(nn.Module):
-  def __init__(self, hidden_dim, n_layers, num_embeds, in_channels = 3):
+  def __init__(self, hidden_dim, n_layers, num_embeds, in_channels = 3, temp = 1.0):
     super().__init__()
+    self.temp = temp
     encoder = []
     decoder = []
     for i in range(n_layers-1):
@@ -388,22 +394,29 @@ class DiscreteResidualVAE(nn.Module):
       ))
     encoder.append(EncoderBlock(hidden_dim, num_embeds, None))
     decoder.append(DecoderBlock(hidden_dim, in_channels, "tanh"))
-    
+
     self.encoder = nn.Sequential(*encoder)
     self.quantised = nn.Embedding(num_embeds, hidden_dim)
     self.decoder = nn.Sequential(*decoder)
-    
+
   def forward(self, x):
     out = self.encoder(x)
     # the output from encoder has shape [bnhw] and so we must perform
     # softmax over n (number of embeddings/vocab size) and so dim = 1
-    out = F.gumbel_softmax(out, tau = 1., dim = 1)
+    out = F.gumbel_softmax(out, tau=self.temp, dim=1)
+
+    # if we just use softmax the images become flat, you can see where
+    # it is attending and what are the important locations, however
+    # there are no colours and the image is basically black and white
+    # unnormed gradient?
+    # out = out / self.temp
+    # out = F.softmax(out, dim = 1)
     out = einsum("bnhw,nd->bdhw", out, self.quantised.weight)
     out = self.decoder(out)
     loss = F.mse_loss(x, out)
     return None, loss, out
 
-# ------- trainer 
+# ------- trainer
 class DiscreteVAETrainer:
   def __init__(self, model, train, test = None):
     self.model = model
@@ -422,7 +435,7 @@ class DiscreteVAETrainer:
     ckpt_path = ckpt_path if ckpt_path is not None else self.config.ckpt_path
     print(f"Saving Model at {ckpt_path}")
     torch.save(raw_model.state_dict(), ckpt_path)
-    
+
   def norm_img(self,img):
     img -= img.min()
     img /= img.max()
@@ -461,7 +474,7 @@ class DiscreteVAETrainer:
 
         # gradient clipping
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
         optim.step()
         gs += 1
         train_losses.append(loss.item())
@@ -485,8 +498,8 @@ class DiscreteVAETrainer:
               _, loss, output_img = model(d)
             loss = loss.mean() # gather from multiple GPUs
             test_loss.append(loss.item())
-            
-          # now create samples of the images and 
+
+          # now create samples of the images and
           fig = plt.figure(figsize = (20, 7))
           for _i,(i,o) in enumerate(zip(d[:10], output_img[:10])):
             i = self.norm_img(i.permute(1, 2, 0).cpu().numpy())
@@ -497,23 +510,26 @@ class DiscreteVAETrainer:
             plt.imshow(o)
           plt.tight_layout()
           plt.savefig(f"./sample_{gs}.png")
-            
+
           test_loss = np.mean(test_loss)
           if WANDB:
             wandb.log({"test_loss": test_loss})
 
           print(":::: Loss:", test_loss)
           if prev_loss > test_loss:
+            print(":: Improvement over previous model")
             self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}{gs}.pt")
             no_improve_step = 0
+            prev_loss = test_loss
           else:
             no_improve_step += 1
+            print(":: No Improvement for:", no_improve_step, "steps!")
 
           if no_improve_step == 3:
-            print("::: No Improvements in 3 epochs, break training")
+            print("::: No Improvement in 3 epochs, break training")
             break
           model = model.train()  # convert model back to training mode
-    
+
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"models/vae_{unk_id}end.pt")
     with open("models/vae_loss.txt", "w") as f:
@@ -521,7 +537,7 @@ class DiscreteVAETrainer:
 
 
 def init_weights(module):
-  if isinstance(module, (nn.Linear, nn.Embedding)):
+  if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv2d, nn.ConvTranspose2d)):
     module.weight.data.normal_(mean=0.0, std=0.02)
     if isinstance(module, nn.Linear) and module.bias is not None:
       module.bias.data.zero_()
@@ -532,24 +548,25 @@ def init_weights(module):
 
 if __name__ == "__main__":
   args = argparse.ArgumentParser(description = "script to train the VectorQuantised-VAE")
-  args.add_argument("--embedding_dim", type=int, default=128, help="embedding dimension to use")
+  args.add_argument("--embedding_dim", type=int, default=150, help="embedding dimension to use")
   args.add_argument("--res", type=int, default=206, help="resolution of the image")
-  args.add_argument("--num_embeddings", type=int, default=1024, help="number of embedding values to use")
+  args.add_argument("--num_embeddings", type=int, default=2048, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=0.0001, help="learning rate for the model")
-  args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
+  args.add_argument("--test_every", type=int, default=200, help="test model after these steps")
+  args.add_argument("--batch_size", type=int, default=144, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=30, help="minibatch size")
   args.add_argument("--model", type=str, default="res", choices=["res", "vqvae", "disvae"], help="minibatch size")
   args.add_argument("--dataset", type=str, default="flikr", choices=["flikr", "cifar"], help="minibatch size")
   args = args.parse_args()
-  
+
   # set seed uptop to ensure everything is properly split
   set_seed(4)
 
   if args.model == "vqvae":
     print(":: Building VQVAE")
     model = VQVAE(
-      in_channels = 3, 
+      in_channels = 3,
       embedding_dim = args.embedding_dim,
       num_embeddings=args.num_embeddings,
       img_size = 32
@@ -573,23 +590,25 @@ if __name__ == "__main__":
     raise ValueError("model should be one of `res`, `disvae`, `vqvae`")
 
   model.apply(init_weights) # initialise weights
-    
+
   cifar = False
   if args.dataset == "flikr":
     # likr_folder, imagenet_folder, coco_folder
     train = BabyDallEDataset(
       flickr_folder="../flickr30k_images/",
       imagenet_folder="../ImageNet-Datasets-Downloader/data/",
-      coco_2014_folder="../train2014/",
-      coco_2017_folder="../train2017",
+      coco_train_folder="../train2017/",
+      coco_val_folder="../val2017/",
+      coco_unlabeled ="../unlabeled2017/",
       res=args.res,
       train=True
     )
     test = BabyDallEDataset(
       flickr_folder="../flickr30k_images/",
       imagenet_folder="../ImageNet-Datasets-Downloader/data/",
-      coco_2014_folder="../train2014/",
-      coco_2017_folder="../train2017",
+      coco_train_folder="../train2017/",
+      coco_val_folder="../val2017/",
+      coco_unlabeled ="../unlabeled2017/",
       res=args.res,
       train=False
     )
@@ -610,4 +629,10 @@ if __name__ == "__main__":
     print(":: Local Run ID:", local_run)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model, train, test)
-  trainer.train(bs=args.batch_size, n_epochs=args.n_epochs, lr=args.lr, unk_id=local_run)
+  trainer.train(
+    bs=args.batch_size,
+    n_epochs=args.n_epochs,
+    lr=args.lr,
+    unk_id=local_run,
+    test_every=args.test_every
+  )
