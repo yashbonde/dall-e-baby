@@ -12,6 +12,7 @@ from uuid import uuid4
 from tqdm import trange
 from torch import nn, einsum
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from torchvision import datasets
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
@@ -64,9 +65,10 @@ class Cifar(Dataset):
 
 
 class FlikrDataset(Dataset):
-  def __init__(self, flikr_folder, imagenet_folder, train = True, train_split=0.98, res=102):
+  def __init__(self, flikr_folder, imagenet_folder, coco_folder, train = True, train_split=0.98, res=102):
     all_files = glob(flikr_folder + "/**/*.jpg")
     all_files += glob(imagenet_folder + "/**/*.jpg")
+    all_files += glob(coco_folder + "/*.jpg")
     np.random.shuffle(all_files)
     train_idx = int(train_split*len(all_files))
     if train:
@@ -399,6 +401,11 @@ class DiscreteVAETrainer:
     ckpt_path = ckpt_path if ckpt_path is not None else self.config.ckpt_path
     print(f"Saving Model at {ckpt_path}")
     torch.save(raw_model.state_dict(), ckpt_path)
+    
+  def norm_img(self,img):
+    img -= img.min()
+    img /= img.max()
+    return img
 
   def train(self, bs, n_epochs, lr, unk_id, save_every=500, test_every = 500):
     model = self.model
@@ -453,10 +460,23 @@ class DiscreteVAETrainer:
           for d, e in zip(dl, pbar_test):
             d = d.to(self.device)
             pbar_test.set_description(f"[TEST - {epoch}]")
-            _, loss, _ = model(d)
+            with torch.no_grad():
+              _, loss, output_img = model(d)
             loss = loss.mean() # gather from multiple GPUs
             test_loss.append(loss.item())
-
+            
+          # now create samples of the images and 
+          fig = plt.figure(figsize = (20, 7))
+          for _i,(i,o) in enumerate(zip(d[:10], output_img[:10])):
+            i = self.norm_img(i.permute(1, 2, 0).cpu().numpy())
+            o = self.norm_img(o.permute(1, 2, 0).cpu().numpy())
+            plt.subplot(2, 10, _i + 1)
+            plt.imshow(i)
+            plt.subplot(2, 10, _i + 10 + 1)
+            plt.imshow(o)
+          plt.tight_layout()
+          plt.savefig(f"./sample_{gs}.png")
+            
           test_loss = np.mean(test_loss)
           if WANDB:
             wandb.log({"test_loss": test_loss})
@@ -491,8 +511,10 @@ def init_weights(module):
 
 if __name__ == "__main__":
   args = argparse.ArgumentParser(description = "script to train the VectorQuantised-VAE")
-  args.add_argument("--embedding_dim", type=int, default=64, help="embedding dimension to use")
-  args.add_argument("--num_embeddings", type=int, default=512, help="number of embedding values to use")
+  args.add_argument("--embedding_dim", type=int, default=128, help="embedding dimension to use")
+  args.add_argument("--res", type=int, default=206, help="resolution of the image")
+  args.add_argument("--num_embeddings", type=int, default=1024, help="number of embedding values to use")
+  args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=0.0001, help="learning rate for the model")
   args.add_argument("--batch_size", type=int, default=300, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=30, help="minibatch size")
@@ -512,7 +534,7 @@ if __name__ == "__main__":
     print(":: Building DiscreteVAE")
     model = DiscreteVAE(
       hdim=args.embedding_dim,
-      num_layers=6,
+      num_layers=args.n_layers, # 6
       num_tokens=args.num_embeddings,
       embedding_dim=args.embedding_dim
     )
@@ -520,7 +542,7 @@ if __name__ == "__main__":
     print(":: Building DiscreteResidualVAE")
     model = DiscreteResidualVAE(
       hidden_dim=args.embedding_dim,
-      n_layers=3,
+      n_layers=args.n_layers,
       num_embeds=args.num_embeddings,
     )
   else:
@@ -530,12 +552,25 @@ if __name__ == "__main__":
     
   cifar = False
   if args.dataset == "flikr":
-    train = FlikrDataset("../flickr30k_images/", "../ImageNet-Datasets-Downloader/data/")
-    test = FlikrDataset("../flickr30k_images/", "../ImageNet-Datasets-Downloader/data/", train = False)
+    # likr_folder, imagenet_folder, coco_folder
+    train = FlikrDataset(
+      likr_folder="../flickr30k_images/",
+      imagenet_folder="../ImageNet-Datasets-Downloader/data/",
+      coco_folder="../train2014/",
+      res=args.res,
+      train=True
+    )
+    test = FlikrDataset(
+      likr_folder="../flickr30k_images/",
+      imagenet_folder="../ImageNet-Datasets-Downloader/data/",
+      coco_folder="../train2014/",
+      res=args.res,
+      train=False
+    )
     print(":: Loaded FlikrDataset", len(train), len(test))
     if len(train) == 0:
         cifar = True
-    
+
   if args.dataset == "cifar" or cifar:
     print(":: Loading cifar dataset")
     train = Cifar(True, True)
