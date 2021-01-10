@@ -64,23 +64,44 @@ class Cifar(Dataset):
       return img, cls
 
 
-class FlikrDataset(Dataset):
-  def __init__(self, flikr_folder, imagenet_folder, coco_folder, train = True, train_split=0.98, res=102):
-    all_files = glob(flikr_folder + "/**/*.jpg")
-    all_files += glob(imagenet_folder + "/**/*.jpg")
-    all_files += glob(coco_folder + "/*.jpg")
+class BabyDallEDataset(Dataset):
+  def __init__(
+      self,
+      flickr_folder,
+      imagenet_folder,
+      coco_2014_folder,
+      coco_2017_folder,
+      train = True,
+      train_split=0.98,
+      res=102
+    ):
+    flikr=glob(flickr_folder + "/**/*.jpg")
+    imagenet=glob(imagenet_folder + "/**/*.jpg")
+    coco_2014=glob(coco_2014_folder + "/*.jpg")
+    coco_2017=glob(coco_2017_folder + "/*.jpg")
+    self.meta={
+      "flikr": len(flikr),
+      "imagenet": len(imagenet),
+      "coco_2014": len(coco_2014),
+      "coco_2017": len(coco_2017),
+      "total": len(flikr)+len(imagenet)+len(coco_2014)+len(coco_2017)
+    }
+    all_files=flikr+imagenet+coco_2014+coco_2017
     np.random.shuffle(all_files)
-    train_idx = int(train_split*len(all_files))
+    train_idx=int(train_split*len(all_files))
     if train:
-        self.files = all_files[:train_idx]
+        self.files=all_files[:train_idx]
     else:
-        self.files = all_files[train_idx:]
-    self.t = transforms.Compose([
+        self.files=all_files[train_idx:]
+    self.t=transforms.Compose([
         transforms.Resize((res, res)),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.Normalize(CIFAR_MEAN, CIFAR_STDS)
     ])
+
+  def __repr__(self):
+    return "<BabyDallEDataset " + "|".join([f"{k}:{v}" for k,v in self.meta.items()]) + ">"
     
   def __len__(self):
     return len(self.files)
@@ -521,6 +542,9 @@ if __name__ == "__main__":
   args.add_argument("--model", type=str, default="res", choices=["res", "vqvae", "disvae"], help="minibatch size")
   args.add_argument("--dataset", type=str, default="flikr", choices=["flikr", "cifar"], help="minibatch size")
   args = args.parse_args()
+  
+  # set seed uptop to ensure everything is properly split
+  set_seed(4)
 
   if args.model == "vqvae":
     print(":: Building VQVAE")
@@ -553,21 +577,23 @@ if __name__ == "__main__":
   cifar = False
   if args.dataset == "flikr":
     # likr_folder, imagenet_folder, coco_folder
-    train = FlikrDataset(
-      likr_folder="../flickr30k_images/",
+    train = BabyDallEDataset(
+      flickr_folder="../flickr30k_images/",
       imagenet_folder="../ImageNet-Datasets-Downloader/data/",
-      coco_folder="../train2014/",
+      coco_2014_folder="../train2014/",
+      coco_2017_folder="../train2017",
       res=args.res,
       train=True
     )
-    test = FlikrDataset(
-      likr_folder="../flickr30k_images/",
+    test = BabyDallEDataset(
+      flickr_folder="../flickr30k_images/",
       imagenet_folder="../ImageNet-Datasets-Downloader/data/",
-      coco_folder="../train2014/",
+      coco_2014_folder="../train2014/",
+      coco_2017_folder="../train2017",
       res=args.res,
       train=False
     )
-    print(":: Loaded FlikrDataset", len(train), len(test))
+    print(":: Loaded BabyDallEDataset", len(train), len(test))
     if len(train) == 0:
         cifar = True
 
@@ -582,7 +608,6 @@ if __name__ == "__main__":
     wandb.watch(model) # watch the model metrics
     local_run = str(uuid4())[:8] + "_"
     print(":: Local Run ID:", local_run)
-  set_seed(4)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer = DiscreteVAETrainer(model, train, test)
   trainer.train(bs=args.batch_size, n_epochs=args.n_epochs, lr=args.lr, unk_id=local_run)
