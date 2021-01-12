@@ -97,10 +97,12 @@ class BabyDallEDataset(Dataset):
     else:
         self.files=all_files[train_idx:]
     self.t=transforms.Compose([
-        transforms.Resize((206, 206)),
+        transforms.Resize((res, res)),
+        transforms.CenterCrop(res),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.Lambda(lambda x: (x-0.5)*2.0)
+        # transforms.Lambda(lambda x: (x-0.5)*2.0),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
   def __repr__(self):
@@ -168,7 +170,8 @@ class ResidualLayer(nn.Module):
     super(ResidualLayer, self).__init__()
     self.resblock=nn.Sequential(
       nn.Conv2d(in_channels, out_channels,kernel_size=3, padding=1, bias=False),
-      nn.ReLU(True),
+      nn.BatchNorm2d(out_channels),
+      nn.LeakyReLU(inplace = True),
       nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False)
     )
 
@@ -176,40 +179,31 @@ class ResidualLayer(nn.Module):
     return input + self.resblock(input)
 
 
-class VQVAE(nn.Module):
-  def __init__(self,
-              in_channels: int,
-              embedding_dim: int,
-              num_embeddings: int,
-              hidden_dims=None,
-              beta: float=0.25,
-              img_size: int=64):
+class VQVAE_Encoder(nn.Module):
+  def __init__(
+    self,
+    in_channels,
+    hidden_dims,
+    n_layers,
+    embedding_dim
+  ):
     super().__init__()
-
-    self.embedding_dim=embedding_dim
-    self.num_embeddings=num_embeddings
-    self.img_size=img_size
-    self.beta=beta
-
-    modules=[]
-    if hidden_dims is None:
-        hidden_dims=[128, 256]
-
+    modules = []
     # Build Encoder
     for h_dim in hidden_dims:
-        modules.append(nn.Sequential(nn.Conv2d(
-          in_channels, out_channels=h_dim, kernel_size=4, stride=2, padding=1),
-          nn.LeakyReLU()
-        ))
-        in_channels=h_dim
+      modules.append(nn.Sequential(nn.Conv2d(
+        in_channels, out_channels=h_dim, kernel_size=4, stride=2, padding=1),
+        nn.LeakyReLU()
+      ))
+      in_channels=h_dim
 
     modules.append(nn.Sequential(nn.Conv2d(
       in_channels, in_channels, kernel_size=3, stride=1, padding=1),
       nn.LeakyReLU()
     ))
 
-    for _ in range(6):
-        modules.append(ResidualLayer(in_channels, in_channels))
+    for _ in range(n_layers):
+      modules.append(ResidualLayer(in_channels, in_channels))
     modules.append(nn.LeakyReLU())
 
     modules.append(nn.Sequential(
@@ -219,10 +213,19 @@ class VQVAE(nn.Module):
 
     self.encoder=nn.Sequential(*modules)
 
-    self.vq_layer=VectorQuantizer(num_embeddings, embedding_dim, self.beta)
+  def forward(self, x):
+    return self.encoder(x)
 
-    # Build Decoder
-    modules=[]
+
+class VQVAE_Decoder(nn.Module):
+  def __init__(
+    self,
+    embedding_dim,
+    hidden_dims,
+    n_layers,
+  ):
+    super().__init__()
+    modules = []
     modules.append(nn.Sequential(nn.Conv2d(
       embedding_dim,
       hidden_dims[-1],
@@ -232,7 +235,7 @@ class VQVAE(nn.Module):
       nn.LeakyReLU())
     )
 
-    for _ in range(6):
+    for _ in range(n_layers):
         modules.append(ResidualLayer(hidden_dims[-1], hidden_dims[-1]))
 
     modules.append(nn.LeakyReLU())
@@ -240,14 +243,14 @@ class VQVAE(nn.Module):
     hidden_dims.reverse()
 
     for i in range(len(hidden_dims) - 1):
-        modules.append(nn.Sequential(nn.ConvTranspose2d(
-          hidden_dims[i],
-          hidden_dims[i + 1],
-          kernel_size=4,
-          stride=2,
-          padding=1),
-          nn.LeakyReLU()
-        ))
+      modules.append(nn.Sequential(nn.ConvTranspose2d(
+        hidden_dims[i],
+        hidden_dims[i + 1],
+        kernel_size=4,
+        stride=2,
+        padding=1),
+        nn.LeakyReLU()
+      ))
 
     modules.append(nn.Sequential(nn.ConvTranspose2d(
       hidden_dims[-1],
@@ -259,6 +262,120 @@ class VQVAE(nn.Module):
     ))
 
     self.decoder=nn.Sequential(*modules)
+  
+  def forward(self, x):
+    return self.decoder(x)
+
+
+class VQVAE_Encoder_v2(nn.Module):
+  def __init__(
+      self,
+      in_channels,
+      hidden_dims,
+      n_layers,
+      embedding_dim
+  ):
+    super().__init__()
+    modules = []
+    # Build Encoder
+    for h_dim in hidden_dims:
+      modules.append(nn.Sequential(
+        nn.Conv2d(in_channels, out_channels=h_dim, kernel_size=4, stride=2, padding=1),
+        nn.BatchNorm2d(h_dim),
+        nn.LeakyReLU()
+      ))
+      in_channels = h_dim
+      modules.append(ResidualLayer(in_channels, in_channels))
+      modules.append(nn.LeakyReLU())
+
+    modules.append(nn.Sequential(
+        nn.Conv2d(in_channels, embedding_dim, kernel_size=1, stride=1),
+        # nn.LeakyReLU()
+    ))
+
+    self.encoder = nn.Sequential(*modules)
+
+  def forward(self, x):
+    return self.encoder(x)
+
+
+class VQVAE_Decoder_v2(nn.Module):
+  def __init__(
+      self,
+      embedding_dim,
+      hidden_dims,
+      n_layers,
+  ):
+    super().__init__()
+    modules = []
+    modules.append(nn.Sequential(nn.Conv2d(
+        embedding_dim,
+        hidden_dims[-1],
+        kernel_size=3,
+        stride=1,
+        padding=1),
+        nn.LeakyReLU())
+    )
+    hidden_dims.reverse()
+    hidden_dims = hidden_dims + [3] # add the last layer in it
+    print(hidden_dims)
+
+    for i in range(len(hidden_dims)-1):
+      modules.append(ResidualLayer(hidden_dims[i], hidden_dims[i]))
+      modules.append(nn.LeakyReLU())
+      modules.append(nn.Sequential(nn.ConvTranspose2d(
+        hidden_dims[i],
+        hidden_dims[i + 1],
+        kernel_size=4,
+        stride=2,
+        padding=1),
+        nn.LeakyReLU()
+      ))
+    modules.append(nn.Tanh())
+    self.decoder = nn.Sequential(*modules)
+
+  def forward(self, x):
+    return self.decoder(x)
+
+
+class VQVAE(nn.Module):
+  def __init__(
+      self,
+      in_channels: int,
+      embedding_dim: int,
+      num_embeddings: int,
+      hidden_dims=[128, 256],
+      n_layers=6,
+      beta: float=0.25,
+      img_size: int=64,
+      v2=True
+    ):
+    super().__init__()
+
+    self.embedding_dim=embedding_dim
+    self.num_embeddings=num_embeddings
+    self.img_size=img_size
+    self.beta=beta
+
+    ENC = VQVAE_Encoder_v2 if v2 else VQVAE_Encoder
+    DEC = VQVAE_Decoder_v2 if v2 else VQVAE_Decoder
+
+    self.encoder = ENC(
+      in_channels=in_channels,
+      hidden_dims=hidden_dims,
+      n_layers=n_layers,
+      embedding_dim=embedding_dim
+    )
+    self.vq_layer=VectorQuantizer(
+      num_embeddings=num_embeddings,
+      embedding_dim=embedding_dim,
+      beta=self.beta
+    )
+    self.decoder = DEC(
+      embedding_dim=embedding_dim,
+      hidden_dims=hidden_dims,
+      n_layers=n_layers,
+    )
 
   def forward(self, input, v=False):
     encoding=self.encoder(input)
@@ -268,12 +385,82 @@ class VQVAE(nn.Module):
     recons=self.decoder(quantized_inputs)
     if v: print("recons:", recons.size())
     recons_loss=F.mse_loss(recons, input)
+    # recons_loss = -F.kl_div(input, recons)
     if v: print("recons_loss:", recons_loss)
     loss=recons_loss + vq_loss
     if v: print("loss:", loss)
-    return recons, loss, encoding_inds
+    return encoding_inds, loss, recons
 
 
+class VQVAE_v3(nn.Module):
+  def __init__(
+      self,
+      in_channels: int,
+      embedding_dim: int,
+      num_embeddings: int,
+      hidden_dims=[128, 256],
+      n_layers=6,
+      beta: float=0.25,
+      img_size: int=64,
+      v2=True
+    ):
+    super().__init__()
+
+    self.embedding_dim=embedding_dim
+    self.num_embeddings=num_embeddings
+    self.img_size=img_size
+    self.beta=beta
+
+    ENC = VQVAE_Encoder_v2 if v2 else VQVAE_Encoder
+    DEC = VQVAE_Decoder_v2 if v2 else VQVAE_Decoder
+
+    self.encoder = ENC(
+      in_channels=in_channels,
+      hidden_dims=hidden_dims,
+      n_layers=n_layers,
+      embedding_dim=embedding_dim
+    )
+    # self.vq_layer=VectorQuantizer(
+    #   num_embeddings=num_embeddings,
+    #   embedding_dim=embedding_dim,
+    #   beta=self.beta
+    # )
+    self.codebook = nn.Embedding(num_embeddings, embedding_dim)
+    self.decoder = DEC(
+      embedding_dim=embedding_dim,
+      hidden_dims=hidden_dims,
+      n_layers=n_layers,
+    )
+
+  def forward(self, input, v=False):
+    encoding=self.encoder(input)
+    if v: print("encoding:", encoding.size())
+    # quantized_inputs, vq_loss, encoding_inds=self.vq_layer(encoding)
+
+    # if we are training then we use the soft-gumbel, during eval we use hard-gumbel
+    # is_training = self.training()
+    # if is_training:
+    #   softmax = F.gumbel_softmax(encoding, tau = 1., dim = 1)
+    # else:
+    #   softmax = F.gumbel_softmax(encoding, tau = 0.75, hard = True, dim = 1)
+    softmax = F.gumbel_softmax(encoding, tau = 1., hard = True, dim = 1)
+    quantized_inputs = einsum("bnhw,nd->bdhw", softmax, self.codebook.weight)
+    encoding_inds = torch.argmax(softmax, dim = 1).view(encoding.size(0), -1)
+
+    vq_loss = F.mse_loss(quantized_inputs.detach(), encoding) + \
+      0.25 * F.mse_loss(quantized_inputs, encoding.detach())
+
+    if v: print("quantized_inputs:", quantized_inputs.size())
+    recons=self.decoder(quantized_inputs)
+    if v: print("recons:", recons.size())
+    recons_loss=F.mse_loss(recons, input)
+    # recons_loss = -F.kl_div(input, recons)
+    if v: print("recons_loss:", recons_loss)
+    loss=recons_loss + vq_loss
+    if v: print("loss:", loss)
+    return encoding_inds, loss, recons
+
+# -------- simple discrete VAE
 class DiscreteVAE(nn.Module):
   def __init__(
       self,
@@ -330,7 +517,7 @@ class DiscreteVAE(nn.Module):
     out=self.decoder(hid_tokens)
     return out
 
-
+# ----------- Residual VAE ----------- #
 class EncoderBlock(nn.Module):
   def __init__(self, hidden_dim, out_channels, act="relu", bn=True):
     super().__init__()
@@ -349,12 +536,13 @@ class EncoderBlock(nn.Module):
       self.act=None
 
   def forward(self, x):
-    out=x + self.resblock(x)
+    # res -> bn -> relu -> conv
+    out=x+self.resblock(x)
     if self.bn is not None:
       out=self.bn(out)
-    out=self.down_conv(out)
     if self.act is not None:
       out=self.act(out)
+    out=self.down_conv(out)
     return out
 
 class DecoderBlock(nn.Module):
@@ -375,16 +563,17 @@ class DecoderBlock(nn.Module):
       self.act=None
 
   def forward(self, x):
-    out=x + self.resblock(x)
+    # res -> bn -> relu -> conv
+    out=x+self.resblock(x)
     if self.bn is not None:
       out=self.bn(out)
-    out=self.up_conv(out)
     if self.act is not None:
       out=self.act(out)
+    out=self.up_conv(out)
     return out
 
 class DiscreteResidualVAE(nn.Module):
-  def __init__(self, hidden_dim, n_layers, num_embeds, in_channels=3, temp=1.0):
+  def __init__(self, hidden_dim, n_layers, num_embeds, codebook_dim, in_channels=3, temp=1.0):
     super().__init__()
     self.temp=temp
     encoder=[]
@@ -394,13 +583,13 @@ class DiscreteResidualVAE(nn.Module):
         hidden_dim=in_channels if i == 0 else hidden_dim,
         out_channels=hidden_dim,
         act="relu",
-        bn=False
+        bn=True
       ))
       decoder.append(DecoderBlock(
-        hidden_dim=hidden_dim,
+        hidden_dim=codebook_dim if i == 0 else hidden_dim,
         out_channels=hidden_dim,
         act="relu",
-        bn=False
+        bn=True
       ))
 
     # add last encoder and decoder
@@ -430,15 +619,17 @@ class DiscreteResidualVAE(nn.Module):
       kernel_size=4,
       stride=2
     ))
+    decoder.append(nn.Tanh())
 
     self.encoder=nn.Sequential(*encoder)
-    self.quantised=nn.Embedding(num_embeds, hidden_dim)
+    self.codebook=nn.Embedding(num_embeds, codebook_dim)
     self.decoder=nn.Sequential(*decoder)
 
   def forward(self, x):
     out=self.encoder(x)
     # the output from encoder has shape [bnhw] and so we must perform
     # softmax over n (number of embeddings/vocab size) and so dim=1
+    # gumbel_softmax learns finer things compared to softmax
     out=F.gumbel_softmax(out, tau=self.temp, dim=1)
 
     # if we just use softmax the images become flat, you can see where
@@ -447,10 +638,79 @@ class DiscreteResidualVAE(nn.Module):
     # unnormed gradient?
     # out=out / self.temp
     # out=F.softmax(out, dim=1)
-    out=einsum("bnhw,nd->bdhw", out, self.quantised.weight)
+    out=einsum("bnhw,nd->bdhw", out, self.codebook.weight)
     out=self.decoder(out)
     loss=F.mse_loss(x, out)
     return None, loss, out
+
+
+# ------- a different take on VQVAE
+class Residualv2(nn.Module):
+  def __init__(self, hid):
+    super().__init__()
+    self.block = nn.Sequential(
+      nn.Conv2d(hid, hid, 3, stride=1, padding = 1),
+      nn.LeakyReLU(inplace = True),
+      nn.Conv2d(hid, hid, 3, stride=1, padding = 1),
+    )
+
+  def forward(self, x):
+    out = self.block(x)
+    return x + out
+  
+class Encoderv2(nn.Module):
+  def __init__(self, hid, out_dim, in_channels = 3):
+    super().__init__()
+    self.c1 = nn.Conv2d(in_channels, hid, kernel_size=4, stride=2, padding = 1)
+    self.c2 = nn.Conv2d(hid, hid, kernel_size=4, stride=2, padding = 1)
+    self.c3 = nn.Conv2d(hid, hid, kernel_size=4, stride=2, padding = 0)
+    self.r1 = Residualv2(hid)
+    self.r2 = Residualv2(hid)
+    self.mp = nn.Conv2d(hid, out_dim, kernel_size=3, stride=1, padding=1)
+  def forward(self, x):
+    out = F.leaky_relu(self.c1(x), inplace=True)
+    out = F.leaky_relu(self.c2(out), inplace = True)
+    out = F.leaky_relu(self.c3(out), inplace = True)
+    out = self.r1(out)
+    out = self.r2(out)
+    out = self.mp(out)
+    return out
+    
+class Decoderv2(nn.Module):
+  def __init__(self, hid, in_channels, out_dim = 3):
+    super().__init__()
+    self.mp = nn.Conv2d(in_channels, hid, kernel_size=3, stride=1, padding=1)
+    self.r1 = Residualv2(hid)
+    self.r2 = Residualv2(hid)
+    self.c1 = nn.ConvTranspose2d(hid, hid, kernel_size=4, stride=2, padding = 0)
+    self.c2 = nn.ConvTranspose2d(hid, hid, kernel_size=4, stride=2, padding = 1)
+    self.c3 = nn.ConvTranspose2d(hid, out_dim, kernel_size=4, stride=2, padding=1)
+  def forward(self, x):
+    out = F.leaky_relu(self.mp(x), inplace=True)
+    out = self.r1(out)
+    out = self.r2(out)
+    out = F.leaky_relu(self.c1(out), inplace=True)
+    out = F.leaky_relu(self.c2(out), inplace=True)
+    out = torch.tanh(self.c3(out))
+    return out
+  
+class VQVAEv2(nn.Module):
+  def __init__(self, hid, vocab_size):
+    super().__init__()
+    self.enc = Encoderv2(hid, vocab_size)
+    self.vocab = nn.Embedding(vocab_size, hid)
+    self.dec = Decoderv2(hid, hid)
+  def forward(self, x):
+    out = self.enc(x)
+
+    # first we perform the gumbel softmax for the reparameterisation trick
+    softmax = F.gumbel_softmax(out, tau=1., dim = 1)
+    embedding = einsum("bdhw,dn->bnhw", softmax, self.vocab.weight)
+    
+    out = self.dec(embedding)
+    recon_loss = F.mse_loss(x, out)
+    return softmax, recon_loss, out
+  
 
 # ------- trainer
 class DiscreteVAETrainer:
@@ -509,6 +769,7 @@ class DiscreteVAETrainer:
           wandb.log({"loss": loss.item()})
 
         # gradient clipping
+        optim.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
         optim.step()
@@ -584,28 +845,32 @@ def init_weights(module):
 
 if __name__ == "__main__":
   args=argparse.ArgumentParser(description="script to train the VectorQuantised-VAE")
-  args.add_argument("--embedding_dim", type=int, default=150, help="embedding dimension to use")
-  args.add_argument("--res", type=int, default=206, help="resolution of the image")
-  args.add_argument("--num_embeddings", type=int, default=2048, help="number of embedding values to use")
+  args.add_argument("--embedding_dim", type=int, default=128, help="embedding dimension to use")
+  args.add_argument("--res", type=int, default=64, help="resolution of the image")
+  args.add_argument("--num_embeddings", type=int, default=512, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
-  args.add_argument("--lr", type=float, default=0.0001, help="learning rate for the model")
-  args.add_argument("--test_every", type=int, default=200, help="test model after these steps")
-  args.add_argument("--batch_size", type=int, default=144, help="minibatch size")
-  args.add_argument("--n_epochs", type=int, default=30, help="minibatch size")
-  args.add_argument("--model", type=str, default="res", choices=["res", "vqvae", "disvae"], help="minibatch size")
-  args.add_argument("--dataset", type=str, default="flikr", choices=["flikr", "cifar"], help="minibatch size")
+  args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
+  args.add_argument("--test_every", type=int, default=300, help="test model after these steps")
+  args.add_argument("--batch_size", type=int, default=128, help="minibatch size")
+  args.add_argument("--n_epochs", type=int, default=30, help="number of epochs to train for")
+  args.add_argument("--model", type=str, default="vqvae3",
+                    choices=["res", "vqvae", "disvae", "vqvae2", "vqvae3"],
+    help="model architecture to use")
+  args.add_argument("--dataset", type=str, default="flikr",
+    choices=["flikr", "cifar"], help="dataset version to use")
   args=args.parse_args()
 
-  # set seed uptop to ensure everything is properly split
+  # set seed to ensure everything is properly split
   set_seed(4)
 
   if args.model == "vqvae":
     print(":: Building VQVAE")
     model=VQVAE(
       in_channels=3,
-      embedding_dim=args.embedding_dim,
+      embedding_dim=args.embedding_dim*4,
       num_embeddings=args.num_embeddings,
-      img_size=32
+      img_size=args.res,
+      hidden_dims=[args.embedding_dim, args.embedding_dim * 2],
     )
   elif args.model == "disvae":
     print(":: Building DiscreteVAE")
@@ -621,6 +886,20 @@ if __name__ == "__main__":
       hidden_dim=args.embedding_dim,
       n_layers=args.n_layers,
       num_embeds=args.num_embeddings,
+      codebook_dim=args.embedding_dim*2
+    )
+  elif args.model == "vqvae2":
+    model=VQVAEv2(
+      hid=args.embedding_dim,
+      vocab_size=args.num_embeddings
+    )
+  elif args.model == "vqvae3":
+    model=VQVAE_v3(
+      in_channels=3,
+      embedding_dim=args.embedding_dim*4,
+      num_embeddings=args.num_embeddings,
+      img_size=args.res,
+      hidden_dims=[args.embedding_dim, args.embedding_dim * 2],
     )
   else:
     raise ValueError("model should be one of `res`, `disvae`, `vqvae`")
