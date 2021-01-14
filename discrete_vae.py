@@ -34,6 +34,7 @@ def set_seed(seed):
 
 
 def get_images_in_folder(folder, ext = [".jpg", ".png"]):
+  # this method is faster than glob
   all_paths = []
   for root,_,files in os.walk(folder):
     for f in files:
@@ -259,8 +260,10 @@ class VQVAE_v3(nn.Module):
       softmax = F.softmax(encoding, dim = 1)
 
       # we can also improve this by introducing the argmax method, since we know that
-      # during testing we do not need the gradient we can get away with it
-    
+      # during testing we do not need the gradient we can get away with it. We simply
+      # create the same value as we would get in the Gumbel distribution
+      softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
+
     # we can also convert the softmax distribution to argmax and identify the final ids
     # to use for language model
     encoding_inds = torch.argmax(softmax, dim = 1).view(encoding.size(0), -1)
@@ -397,13 +400,13 @@ def init_weights(module):
 
 if __name__ == "__main__":
   args=argparse.ArgumentParser(description="script to train a Discrete VAE model")
-  args.add_argument("--embedding_dim", type=int, default=64, help="embedding dimension to use")
+  args.add_argument("--embedding_dim", type=int, default=200, help="embedding dimension to use")
   args.add_argument("--res", type=int, default=128, help="resolution of the image")
   args.add_argument("--num_embeddings", type=int, default=1024, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
-  args.add_argument("--test_every", type=int, default=300, help="test model after these steps")
-  args.add_argument("--batch_size", type=int, default=128, help="minibatch size")
+  args.add_argument("--test_every", type=int, default=600, help="test model after these steps")
+  args.add_argument("--batch_size", type=int, default=64, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=5, help="number of epochs to train for")
   args.add_argument(
     "--model", type=str, default="vqvae3",
@@ -430,7 +433,7 @@ if __name__ == "__main__":
       embedding_dim=args.embedding_dim*4,
       num_embeddings=args.num_embeddings,
       img_size=args.res,
-      hidden_dims=[args.embedding_dim, int(args.embedding_dim * 1.5), args.embedding_dim * 2],
+      hidden_dims=[args.embedding_dim, args.embedding_dim, args.embedding_dim * 2],
     )
   elif args.model == "disvae":
     print(":: Building DiscreteVAE")
@@ -456,12 +459,18 @@ if __name__ == "__main__":
     )
   elif args.model == "vqvae3":
     print(":: Building VQVAE_v3")
+    if args.res == 64:
+        hdim = [args.embedding_dim, args.embedding_dim * 2]
+    elif args.res == 128:
+        hdim = [args.embedding_dim, int(args.embedding_dim * 1.5), args.embedding_dim * 2]
+    elif args.res == 256:
+        hdim = [args.embedding_dim, int(args.embedding_dim * 1.5), args.embedding_dim * 2, int(args.embedding_dim * 2.5)]
     model=VQVAE_v3(
       in_channels=3,
       embedding_dim=args.embedding_dim*4,
       num_embeddings=args.num_embeddings,
       img_size=args.res,
-      hidden_dims=[args.embedding_dim, args.embedding_dim * 2],
+      hidden_dims=hdim,
     )
   else:
     raise ValueError("incorrect model run $python3 discrete_vae.py --help")

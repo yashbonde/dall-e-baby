@@ -9,10 +9,12 @@ OpenAI's [dall-e](https://openai.com/blog/dall-e/) is a kick ass model that take
 First step is to train a discrete VAE which can be done by:
 ```
 python3 discrete_vae.py
-...
-[TRAIN - 12] GS: 3999, Loss: 0.25907:  94%|█████████████████████████████████████████████████████████████████████████▍    | 291/309 [01:01<00:03,  4.82it/s]Saving Model at models/vae_4000.pt
-[TRAIN - 12] GS: 4016, Loss: 0.24636: 100%|█████████████████████████████████████████████████████████████████████████████▋| 308/309 [01:05<00:00,  4.72it/s]
-...
 ```
 
-It turns out training a VAE is not an easy task I trained using SGD but the training was taking too long and kept collapsing. Adam with gradient clipping works best.
+It turns out training a VAE is not an easy task I trained using SGD but the training was taking too long and kept collapsing. Adam with gradient clipping works best. After training over a 90 models I found out that the best model was with `res:64, batch_size:128, num_embedding:1024, mid_res:16`. The models with larger mid size ie. where the low dimensional resolution is <4x the original resolution. Below is a sample from above configuration:
+
+<img src="assets/128_64_1024.gif">
+
+Where as what happens with config `res:128, batch_size:128, num_embedding:1024, mid_res:16`
+
+<img src="assets/128_1024.gif">
