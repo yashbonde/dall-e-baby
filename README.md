@@ -35,5 +35,16 @@ Originally I was a fool who scraped images for the dataset, that is a very stupi
 |Yelp Restaurant Photo Classification Data (Has Duplicates)|14.14GB|NA|[torrent](https://academictorrents.com/details/19c3aa2166d7bfceaf3d76c0d36f812e0f1b87bc)|
 |CVPR Indoor Scene Recognition|2.59GB|15620|[torrent](https://academictorrents.com/details/59aa0ad684e5d849f68bad9a6d43a9000a927164)|
 |Flickr 30k Captions (bad data, downloads duplicates)|8GB|31K|[kaggle](https://www.kaggle.com/hsankesara/flickr-image-dataset)|
+|Food-101|5.69GB|101K|[torrent](https://academictorrents.com/details/470791483f8441764d3b01dbc4d22b3aa58ef46f)|
+|The Street View House Numbers (SVHN) Dataset|2.64GB|600K|[torrent](https://academictorrents.com/details/6f4caf3c24803d114c3cae3ab9cb946cd23c7213)|
+|Downsampled ImageNet 64x64|12.59GB|NA|[torrent](https://academictorrents.com/details/96816a530ee002254d29bf7a61c0c158d3dedc3b)|
 
 Of these datasets `Visual Genome, COCO, Flickr30K` has captions assosicated with the image. Rest of them have classes asssociated with each one of the images. We can then create create extra captions for each of the images using pretrained models like GPT-2.
+
+# Credits
+
+This work would not have been possible because of millions of people who helped create the dataset.
+
+## License
+
+MIT License.
