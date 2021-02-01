@@ -10,7 +10,7 @@ I am streaming the progress of this side-project on [Youtube](https://www.youtub
 
 ## Training
 
-First step is to train a discrete VAE which can be done by:
+First step is to clean the data using an extra script provided `python3 clean_data.py`. **Note** that you need to update the `folders` as per your requirements. Train a discrete VAE easily by running:
 ```
 python3 discrete_vae.py
 ```
@@ -22,6 +22,11 @@ It turns out training a VAE is not an easy task I trained using SGD but the trai
 Where as what happens with config `res:128, batch_size:128, num_embedding:1024, mid_res:16`
 
 <img src="assets/128_1024.gif">
+
+Final version of the model used the following configuration:
+```
+:: Dataset: <BabyDallEDataset (train) openimages256:2010097|food-101:101000|imagenet_train64x64:0 svhn:248823|genome1:64346|genome2:43903|stl10:88515|total:2556684>
+```
 
 ## Datasets
 

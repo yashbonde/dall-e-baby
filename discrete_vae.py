@@ -49,7 +49,7 @@ class BabyDallEDataset(Dataset):
       self,
       folders,
       train=True,
-      train_split=0.98,
+      train_split=0.99,
       res=102
     ):
     # in the initial version of the model we used different arguments for each
@@ -263,7 +263,7 @@ class VQVAE_v3(nn.Module):
 
     # we can also convert the softmax distribution to argmax and identify the final ids
     # to use for language model
-    encoding_inds = torch.argmax(softmax, dim = 1).view(encoding.size(0), -1)
+    encoding_ids = torch.argmax(softmax, dim = 1).view(encoding.size(0), -1)
 
     # now just like conventional embedding we tell the model to fill the hard indices
     # with the values from a learnable embedding matrix.
@@ -279,7 +279,7 @@ class VQVAE_v3(nn.Module):
     recons=self.decoder(quantized_inputs)
     recons_loss=F.mse_loss(recons, input)
     loss = recons_loss # + vq_loss
-    return encoding_inds, loss, recons
+    return encoding_ids, loss, recons
 
 
 # ------- trainer
