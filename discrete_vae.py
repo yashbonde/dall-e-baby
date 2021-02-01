@@ -123,6 +123,7 @@ class VQVAE_Encoder_v2(nn.Module):
       in_channels,
       hidden_dims,
       num_embeddings,
+      add_residual=True,
       **kwargs
   ):
     """
@@ -142,8 +143,9 @@ class VQVAE_Encoder_v2(nn.Module):
         nn.LeakyReLU()
       ))
       in_channels = h_dim
-      modules.append(ResidualLayer(in_channels, in_channels))
-      modules.append(nn.LeakyReLU())
+      if add_residual:
+        modules.append(ResidualLayer(in_channels, in_channels))
+        modules.append(nn.LeakyReLU())
 
     modules.append(nn.Sequential(
         nn.Conv2d(in_channels, num_embeddings, kernel_size=1, stride=1),
@@ -161,6 +163,8 @@ class VQVAE_Decoder_v2(nn.Module):
       self,
       embedding_dim,
       hidden_dims,
+      out_channels,
+      add_residual=True,
       **kwargs
   ):
     """
@@ -179,12 +183,13 @@ class VQVAE_Decoder_v2(nn.Module):
       nn.LeakyReLU()
     ))
     hidden_dims.reverse()
-    hidden_dims = hidden_dims + [3] # add the last layer in it
+    hidden_dims = hidden_dims + [out_channels]  # add the last layer in it
 
     last = len(hidden_dims) - 1
     for i in range(last):
-      modules.append(ResidualLayer(hidden_dims[i], hidden_dims[i]))
-      modules.append(nn.LeakyReLU())
+      if add_residual:
+        modules.append(ResidualLayer(hidden_dims[i], hidden_dims[i]))
+        modules.append(nn.LeakyReLU())
 
       # we need a tanh activation for the last layer not LReLU
       if i != last-1:
@@ -212,27 +217,27 @@ class VQVAE_v3(nn.Module):
       embedding_dim: int,
       num_embeddings: int,
       hidden_dims=[128, 256],
-      n_layers=6,
-      img_size: int=64,
+      add_residual=True,
+      **kwargs
     ):
     super().__init__()
 
     self.embedding_dim=embedding_dim
     self.num_embeddings=num_embeddings
-    self.img_size=img_size
 
     self.encoder = VQVAE_Encoder_v2(
       in_channels=in_channels,
       hidden_dims=hidden_dims,
-      n_layers=n_layers,
       embedding_dim=embedding_dim,
-      num_embeddings=num_embeddings
+      num_embeddings=num_embeddings,
+      add_residual=add_residual,
     )
     self.codebook = nn.Embedding(num_embeddings, embedding_dim)
     self.decoder = VQVAE_Decoder_v2(
       embedding_dim=embedding_dim,
       hidden_dims=hidden_dims,
-      n_layers=n_layers,
+      out_channels=in_channels,
+      add_residual=add_residual,
     )
 
   def forward(self, input, v=False):
@@ -305,7 +310,7 @@ class DiscreteVAETrainer:
     img /= img.max()
     return img
 
-  def train(self, bs, n_epochs, lr, folder_path, test_every=500, **kwargs):
+  def train(self, bs, n_epochs, lr, folder_path, test_every=500, test_batch_size = None, **kwargs):
     model=self.model
     train_data=self.train_dataset
     test_data=self.test_dataset
@@ -342,11 +347,13 @@ class DiscreteVAETrainer:
         # ----- test condition
         if test_data != None and gs and gs % test_every == 0:
           print(":: Entering Testing Mode")
+          if test_batch_size is None:
+            test_batch_size = bs * 4
           dl=DataLoader(
             dataset=test_data,
-            batch_size=bs,
-            pin_memory=True,
-            shuffle=False # to ensure we can see the progress being made
+            batch_size=test_batch_size, # testing can run larger batches
+            pin_memory=True,            # for CUDA
+            shuffle=False               # to ensure we can see the progress being made
           )
           model=model.eval() # convert model to testing mode
           epoch_step_test=len(test_data) // bs + int(len(test_data) % bs != 0)
@@ -410,6 +417,7 @@ if __name__ == "__main__":
     choices=["res", "vqvae", "disvae", "vqvae2", "vqvae3"],
     help="model architecture to use"
   )
+  args.add_argument("--add_residual", type=bool, default=True, help="to use the residual connections")
   args.add_argument(
     "--dataset", type=str, default="mix",
     choices=["mix", "cifar"],
@@ -468,6 +476,7 @@ if __name__ == "__main__":
       num_embeddings=args.num_embeddings,
       img_size=args.res,
       hidden_dims=hdim,
+      add_residual=args.add_residual
     )
   else:
     raise ValueError("incorrect model run $python3 discrete_vae.py --help")
