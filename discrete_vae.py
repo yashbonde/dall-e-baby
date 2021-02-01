@@ -109,7 +109,8 @@ class ResidualLayer(nn.Module):
         nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
         nn.BatchNorm2d(out_channels),
         nn.LeakyReLU(inplace=True),
-        nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False)
+        nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False),
+        nn.BatchNorm2d(out_channels),
     )
 
   def forward(self, input):
@@ -173,35 +174,31 @@ class VQVAE_Decoder_v2(nn.Module):
     super().__init__()
     modules = []
     modules.append(nn.Sequential(
-      nn.Conv2d(
-        embedding_dim,
-        hidden_dims[-1],
-        kernel_size=3,
-        stride=1,
-        padding=1
-      ),
-        nn.LeakyReLU()
+      nn.Conv2d(embedding_dim, hidden_dims[-1], kernel_size=3, stride=1, padding=1),
+      nn.BatchNorm2d(hidden_dims[-1]),
+      nn.LeakyReLU()
     ))
     hidden_dims.reverse()
     hidden_dims = hidden_dims + [3] # add the last layer in it
 
-    last = len(hidden_dims) - 1 
+    last = len(hidden_dims) - 1
     for i in range(last):
       modules.append(ResidualLayer(hidden_dims[i], hidden_dims[i]))
       modules.append(nn.LeakyReLU())
 
       # we need a tanh activation for the last layer not LReLU
-      act = nn.LeakyReLU() if i != last-1 else nn.Tanh()
-      modules.append(nn.Sequential(
-        nn.ConvTranspose2d(
-          hidden_dims[i],
-          hidden_dims[i + 1],
-          kernel_size=4,
-          stride=2,
-          padding=1
-        ),
-        act
-      ))
+      if i != last-1:
+        modules.append(nn.Sequential(
+          nn.ConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], kernel_size=4, stride=2, padding=1),
+          nn.BatchNorm2d(hidden_dims[i + 1]),
+          nn.LeakyReLU()
+        ))
+      else:
+        modules.append(nn.Sequential(
+          nn.ConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], kernel_size=4, stride=2, padding=1),
+          nn.Tanh()
+        ))
+
     self.decoder = nn.Sequential(*modules)
 
   def forward(self, x):
@@ -241,7 +238,7 @@ class VQVAE_v3(nn.Module):
   def forward(self, input, v=False):
     # first step is to pass the image through encoder and get the embeddings
     encoding=self.encoder(input)
-    
+
     # the idea behind this model is that encoder is supposed to generate a dense
     # embedding (smaller image) with larger vocabulary and more information
     # (embedding dimension). The decoder is then supposed to take in this
@@ -261,23 +258,23 @@ class VQVAE_v3(nn.Module):
 
       # we can also improve this by introducing the argmax method, since we know that
       # during testing we do not need the gradient we can get away with it. We simply
-      # create the same value as we would get in the Gumbel distribution
+      # create the same shape as we would get in the Gumbel distribution
       softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
 
     # we can also convert the softmax distribution to argmax and identify the final ids
     # to use for language model
     encoding_inds = torch.argmax(softmax, dim = 1).view(encoding.size(0), -1)
-    
+
     # now just like conventional embedding we tell the model to fill the hard indices
     # with the values from a learnable embedding matrix.
     quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
-    
+
     # vq loss or Vector Quantisation loss as given in the original VQ-VAE paper
     # from: https://arxiv.org/pdf/1711.00937.pdf
     # we do not need this in out case since we use gumbel as a bypass for it.
     # vq_loss = F.mse_loss(quantized_inputs.detach(), encoding) + \
     #   0.25 * F.mse_loss(quantized_inputs, encoding.detach())
-    
+
     # we pass the embedding through decoder that is supposed to recreate the image
     recons=self.decoder(quantized_inputs)
     recons_loss=F.mse_loss(recons, input)
@@ -480,20 +477,30 @@ if __name__ == "__main__":
 
   # now that we can load any number of datasets from different folder
   # this is the master copy of all the folders
+  # folders = {
+  #   "flickr_folder":"../flickr30k_images/",
+  #   "imagenet_folder":"../ImageNet-Datasets-Downloader/data/",
+  #   "coco_train_folder":"../train2017/",
+  #   "coco_val_folder":"../val2017/",
+  #   "coco_unlabeled":"../unlabeled2017/",
+  #   "yfcc100m_folder":"../yfcc100m-downloader/data/",
+  #   "lfw":"../lfw/",
+  #   "stanford_dog":"../Images/",
+  #   "img_genome2":"../VG_100K_2/",
+  #   "img_genome1":"../VG_100K/",
+  #   "pascal_voc":"../VOCdevkit/",
+  #   "mnist":"../mnist_jpeg/",
+  #   "svhn":"../svhn/"
+  # }
+
   folders = {
-    "flickr_folder":"../flickr30k_images/",
-    "imagenet_folder":"../ImageNet-Datasets-Downloader/data/",
-    "coco_train_folder":"../train2017/",
-    "coco_val_folder":"../val2017/",
-    "coco_unlabeled":"../unlabeled2017/",
-    "yfcc100m_folder":"../yfcc100m-downloader/data/",
-    "lfw":"../lfw/",
-    "stanford_dog":"../Images/",
-    "img_genome2":"../VG_100K_2/",
-    "img_genome1":"../VG_100K/",
-    "pascal_voc":"../VOCdevkit/",
-    "mnist":"../mnist_jpeg/",
-    "svhn":"../svhn/"
+    "openimages256": "../downsampled-open-images-v4/",
+    "food-101": "../food-101/",
+    "imagenet_train64x64": "../train64x64/",
+    "svhn": "../housenumbers/",
+    "genome1": "../VG_100K/",
+    "genome2": "../VG_100K_2/",
+    "stl10": "../stl10/"
   }
 
   if args.dataset == "mix":
