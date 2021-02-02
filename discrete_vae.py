@@ -361,7 +361,7 @@ class DiscreteVAETrainer:
             shuffle=False               # to ensure we can see the progress being made
           )
           model=model.eval() # convert model to testing mode
-          epoch_step_test=len(test_data) // bs + int(len(test_data) % bs != 0)
+          epoch_step_test=len(test_data) // test_batch_size + int(len(test_data) % test_batch_size != 0)
           pbar_test=trange(epoch_step_test)
           test_loss=[]
           for d, e in zip(dl, pbar_test):
@@ -414,9 +414,9 @@ if __name__ == "__main__":
   args.add_argument("--num_embeddings", type=int, default=2048, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
-  args.add_argument("--test_every", type=int, default=600, help="test model after these steps")
+  args.add_argument("--test_every", type=int, default=1800, help="test model after these steps")
   args.add_argument("--batch_size", type=int, default=64, help="minibatch size")
-  args.add_argument("--n_epochs", type=int, default=5, help="number of epochs to train for")
+  args.add_argument("--n_epochs", type=int, default=2, help="number of epochs to train for")
   args.add_argument(
     "--model", type=str, default="vqvae3",
     choices=["res", "vqvae", "disvae", "vqvae2", "vqvae3"],

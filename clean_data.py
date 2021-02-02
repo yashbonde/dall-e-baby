@@ -71,6 +71,7 @@ for name, path in folders.items():
     total += len(paths)
 meta["total"] = total
 
+print("-"*70)
 for k,v in meta.items():
   print(k,"::",v)
 
@@ -88,6 +89,7 @@ def check_files(files):
   subprocess.run(["rm", *fails])
 
 # split all the files into buckets and an extra bucket with the files not checked
+print("-"*70)
 print(":: Starting corruption check")
 workers = cpu_count()
 splits = np.split(
@@ -108,4 +110,19 @@ for p in ps:
 
 # extra check for the small last bucket
 check_files(splits[-1])
-print(":: Process completed")
+print(":: Process completed. Rechecking!")
+
+all_files = []
+meta = {}
+total = 0
+for name, path in folders.items():
+    paths = get_images_in_folder(path)
+    all_files.extend(paths)
+    meta[name] = len(paths)
+    total += len(paths)
+meta["total"] = total
+
+print("-"*70)
+for k, v in meta.items():
+  print(k, "::", v)
+print("-"*70)
