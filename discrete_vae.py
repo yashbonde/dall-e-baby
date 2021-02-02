@@ -530,11 +530,12 @@ if __name__ == "__main__":
   folders = {
     "openimages256": "../downsampled-open-images-v4/",
     "food-101": "../food-101/",
-    "imagenet_train64x64": "../train64x64/",
     "svhn": "../housenumbers/",
+    "indoor": "../indoorCVPR/",
+    "imagenet_train64x64": "../small/",
+    "stl10": "../stl10/",
     "genome1": "../VG_100K/",
     "genome2": "../VG_100K_2/",
-    "stl10": "../stl10/"
   }
 
   if args.dataset == "mix":

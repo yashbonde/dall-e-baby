@@ -9,9 +9,9 @@ from multiprocessing import Process, cpu_count
 print(":: Converting STL to Images")
 stl10_binary_files = ['../stl10/stl10_binary/test_X.bin', '../stl10/stl10_binary/train_X.bin']
 for f in stl10_binary_files:
-  with open(f, 'rb') as f:
+  with open(f, 'rb') as fobj:
     # read whole file in uint8 chunks
-    everything = np.fromfile(f, dtype=np.uint8)
+    everything = np.fromfile(fobj, dtype=np.uint8)
 
     # We force the data into 3x96x96 chunks, since the
     # images are stored in "column-major order", meaning
@@ -40,13 +40,14 @@ for f in stl10_binary_files:
 # sometimes you will see that the files are corrupted and so they need to be found and cleaned
 # replace this with the datasets that you are going to use
 folders = {
-  "openimages256": "./downsampled-open-images-v4/",
-  "food-101": "./food-101/",
-  "imagenet_train64x64": "./train64x64/",
-  "svhn": "./housenumbers/",
-  "genome1": "./VG_100K/",
-  "genome2": "./VG_100K_2/",
-  "stl10": "./stl10/"
+  "openimages256": "../downsampled-open-images-v4/",
+  "food-101": "../food-101/",
+  "svhn": "../housenumbers/",
+  "indoor": "../indoorCVPR/",
+  "imagenet_train64x64": "../small/",
+  "stl10": "../stl10/",
+  "genome1": "../VG_100K/",
+  "genome2": "../VG_100K_2/",
 }
 
 
@@ -85,7 +86,7 @@ def check_files(files):
     except:
       fails.append(f)
   if len(fails):
-    print("\n\n", ",".join(fails))
+    print("\n\n", " ".join(fails))
   subprocess.run(["rm", *fails])
 
 # split all the files into buckets and an extra bucket with the files not checked
