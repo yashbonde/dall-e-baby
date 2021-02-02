@@ -24,6 +24,10 @@ WANDB=os.getenv("WANDB")
 if WANDB:
   import wandb
 
+# https://stackoverflow.com/questions/12984426/python-pil-ioerror-image-file-truncated-with-big-images
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 # --- helper functions
 def set_seed(seed):
   if seed is not None:
@@ -315,7 +319,7 @@ class DiscreteVAETrainer:
     img /= img.max()
     return img
 
-  def train(self, bs, n_epochs, lr, folder_path, test_every=500, test_batch_size = None, **kwargs):
+  def train(self, bs, n_epochs, lr, folder_path, skip_steps, test_every=500, test_batch_size=None, **kwargs):
     model=self.model
     train_data=self.train_dataset
     test_data=self.test_dataset
@@ -333,7 +337,10 @@ class DiscreteVAETrainer:
         shuffle=True        # of course, my stupid ass didn't do it for first 74 runs
       )
       pbar=trange(epoch_step)
-      for d, _ in zip(dl, pbar):
+      for d, loop_idx in zip(dl, pbar):
+        # don't train if we need to skip some steps
+        if skip_steps and loop_idx < skip_steps:
+          continue
         d=d.to(self.device)
         pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss, _=model(d)
@@ -428,13 +435,19 @@ if __name__ == "__main__":
     choices=["mix", "cifar"],
     help="dataset version to use"
   )
+  args.add_argument("--skip_steps", type=int, default=0, help="number of steps to skip when restarting")
+  args.add_argument("--restart_path", type=str, default=None, help="path to the model that is to be restarted")
+  args.add_argument("--seed", type=int, default=3, help="seed value") # 3 = my misha
   args=args.parse_args()
 
   # set seed to ensure everything is properly split
-  set_seed(3) # my misha
+  set_seed(args.seed)
   folder_path = f"./model_{args.model}_{args.res}_{args.embedding_dim}_{args.num_embeddings}_{int(args.add_residual)}"
   print(f":: Will Save data in {folder_path}")
   os.makedirs(folder_path, exist_ok=True)
+
+  if args.skip_steps != 0 and args.restart_path == None:
+    raise ValueError("Need to provide --restart_path when restarting")
 
   if args.model == "vqvae":
     print(":: Building VQVAE")
@@ -488,6 +501,10 @@ if __name__ == "__main__":
   
   # print(model)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
+
+  if args.restart_path is not None:
+    print(f":: Found restart_path {args.restart_path}")
+    model.load_state_dict(torch.load(args.restart_path))
 
   # let's not initialise the weights and pytorch take care of it
   # model.apply(init_weights) # initialise weights
@@ -555,6 +572,7 @@ if __name__ == "__main__":
     bs=args.batch_size,
     n_epochs=args.n_epochs,
     lr=args.lr,
+    skip_steps=args.skip_steps,
     unk_id=local_run,
     test_every=args.test_every,
     folder_path=folder_path
