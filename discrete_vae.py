@@ -49,9 +49,13 @@ class BabyDallEDataset(Dataset):
       self,
       folders,
       train=True,
-      train_split=0.99,
+      train_split=0.994,
       res=102
     ):
+    # since the test split is simply used for visualisation purposes, gives a
+    # rough idea of where the training is headed it is fine if it is super
+    # small
+
     # in the initial version of the model we used different arguments for each
     # folder now automatically load any arbitrary number of folder and images.
     # store metadata against each one of them for reference
@@ -91,6 +95,7 @@ class BabyDallEDataset(Dataset):
           transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
       ])
       self.mode = "test"
+    self.meta[self.mode] = len(self.files)
 
   def __repr__(self):
     return f"<BabyDallEDataset ({self.mode}) " + "|".join([f"{k}:{v}" for k,v in self.meta.items()]) + ">"
@@ -178,7 +183,7 @@ class VQVAE_Decoder_v2(nn.Module):
     super().__init__()
     modules = []
     modules.append(nn.Sequential(
-      nn.Conv2d(embedding_dim, hidden_dims[-1], kernel_size=3, stride=1, padding=1),
+      nn.ConvTranspose2d(embedding_dim, hidden_dims[-1], kernel_size=3, stride=1, padding=1),
       nn.BatchNorm2d(hidden_dims[-1]),
       nn.LeakyReLU()
     ))
@@ -406,7 +411,7 @@ if __name__ == "__main__":
   args=argparse.ArgumentParser(description="script to train a Discrete VAE model")
   args.add_argument("--embedding_dim", type=int, default=200, help="embedding dimension to use")
   args.add_argument("--res", type=int, default=128, help="resolution of the image")
-  args.add_argument("--num_embeddings", type=int, default=1024, help="number of embedding values to use")
+  args.add_argument("--num_embeddings", type=int, default=2048, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
   args.add_argument("--test_every", type=int, default=600, help="test model after these steps")
@@ -417,7 +422,7 @@ if __name__ == "__main__":
     choices=["res", "vqvae", "disvae", "vqvae2", "vqvae3"],
     help="model architecture to use"
   )
-  args.add_argument("--add_residual", type=bool, default=True, help="to use the residual connections")
+  args.add_argument("--add_residual", type=bool, default=False, help="to use the residual connections")
   args.add_argument(
     "--dataset", type=str, default="mix",
     choices=["mix", "cifar"],
@@ -427,7 +432,7 @@ if __name__ == "__main__":
 
   # set seed to ensure everything is properly split
   set_seed(3) # my misha
-  folder_path = f"./model_{args.model}_{args.res}_{args.embedding_dim}_{args.num_embeddings}"
+  folder_path = f"./model_{args.model}_{args.res}_{args.embedding_dim}_{args.num_embeddings}_{int(args.add_residual)}"
   print(f":: Will Save data in {folder_path}")
   os.makedirs(folder_path, exist_ok=True)
 
@@ -472,7 +477,7 @@ if __name__ == "__main__":
         hdim = [args.embedding_dim, int(args.embedding_dim * 1.5), args.embedding_dim * 2, int(args.embedding_dim * 2.5)]
     model=VQVAE_v3(
       in_channels=3,
-      embedding_dim=args.embedding_dim*4,
+      embedding_dim=args.embedding_dim*3,
       num_embeddings=args.num_embeddings,
       img_size=args.res,
       hidden_dims=hdim,
@@ -480,6 +485,9 @@ if __name__ == "__main__":
     )
   else:
     raise ValueError("incorrect model run $python3 discrete_vae.py --help")
+  
+  # print(model)
+  print(":: Number of params:", sum(p.numel() for p in model.parameters()))
 
   # let's not initialise the weights and pytorch take care of it
   # model.apply(init_weights) # initialise weights
@@ -542,7 +550,6 @@ if __name__ == "__main__":
     wandb.watch(model) # watch the model metrics
     local_run=str(uuid4())[:8] + "_"
     print(":: Local Run ID:", local_run)
-  print(":: Number of params:", sum(p.numel() for p in model.parameters()))
   trainer=DiscreteVAETrainer(model, train, test)
   trainer.train(
     bs=args.batch_size,
