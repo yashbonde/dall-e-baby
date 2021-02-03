@@ -1,0 +1,65 @@
+# Vast.ai machines are super barebones and so we need to install a lot of things
+apt install -y git; apt-get update; apt install git --fix-missing; apt install -y htop unzip wget aria2; git clone https://github.com/yashbonde/dall-e-baby.git;
+
+# download all the files using commands below
+wget https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip;                               # visual Genome-1
+wget https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip;                              # visual Genome-2
+aria2c https://academictorrents.com/download/96816a530ee002254d29bf7a61c0c158d3dedc3b.torrent; # imagenet
+aria2c https://academictorrents.com/download/a799a2845ac29a66c07cf74e2a2838b6c5698a6a.torrent; # STL-10
+aria2c https://academictorrents.com/download/470791483f8441764d3b01dbc4d22b3aa58ef46f.torrent; # food-101
+aria2c https://academictorrents.com/download/59aa0ad684e5d849f68bad9a6d43a9000a927164.torrent; # indoor CVPR
+aria2c https://academictorrents.com/download/6f4caf3c24803d114c3cae3ab9cb946cd23c7213.torrent; # SVHN
+
+# extract visual Genome
+unzip -q images.zip;
+unzip -q images2.zip;
+rm images.zip images2.zip;
+
+# extract imagenet
+cd small;
+tar -xf valid_64x64.tar;
+tar -xf train_64x64.tar;
+rm *;
+
+# extract STL-10
+tar -xf stl10_binary.tar.gz;
+rm*;
+
+# extract food
+rm food-101.tgz-470791483f8441764d3b01dbc4d22b3aa58ef46f.torrent;
+tar -xf food-101.tgz;
+rm food-101.tgz;
+
+# extract indoorCVPR
+tar -xf indoorCVPR_09.tar;
+rm indoorCVPR_09.tar;
+rm *59aa0ad684e5d849f68bad9a6d43a9000a927164.torrent;
+mv Images/ indoorCVPR/; # change the name to correct dataset folder
+
+# extracting SVHN
+for i in extra.tar.gz test.tar.gz train.tar.gz
+do 
+	echo "Untarring: $i";
+	tar -xf $i;
+done
+
+######
+# downloading downsampled OpenImages is a bit tricky because we do not want to download all the files (56GB+)
+# so the first step is donwloading the metadata then getting the file numbers to download
+aria2c --bt-metadata-only=true --bt-save-metadata=true https://academictorrents.com/download/9208d33aceb2ca3eb2beb70a192600c9c41efba1.torrent;
+aria2c --show-files /workspace/downsampled-open-images-v4-9208d33aceb2ca3eb2beb70a192600c9c41efba1.torrent;
+aria2c --select-file=9,11,15 /workspace/downsampled-open-images-v4-9208d33aceb2ca3eb2beb70a192600c9c41efba1.torrent;
+
+# next steps is to go to each folder and unzip the files
+echo "Gathering downsampled-open-images-v4"
+rm downsampled-open-images-v4*
+cd downsampled-open-images-v4/
+rm -rf 512px/
+cd 256px/
+for i in test-256.tar.gz test_challenge_2018-256.tar.gz train-256.tar.gz validation-256.tar.gz
+do 
+	echo "Untarring: $i";
+	tar -xf $i;
+done
+rm *; # removes all the files other than data folders
+######

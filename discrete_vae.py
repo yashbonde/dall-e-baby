@@ -328,6 +328,7 @@ class DiscreteVAETrainer:
     gs=0
     train_losses=[-1]
     model.train()
+    do_skip = True
     for epoch in range(n_epochs):
       # ----- train for one complete epoch
       dl=DataLoader(
@@ -338,9 +339,13 @@ class DiscreteVAETrainer:
       )
       pbar=trange(epoch_step)
       for d, loop_idx in zip(dl, pbar):
-        # don't train if we need to skip some steps
-        if skip_steps and loop_idx < skip_steps:
+        # don't train if we need to skip some steps but we do not want
+        # it to skip for all the future epochs and so we add `do_skip` flag
+        if skip_steps and loop_idx < skip_steps and do_skip:
           continue
+        do_skip = False
+
+        # train the model
         d=d.to(self.device)
         pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss, _=model(d)
@@ -501,32 +506,17 @@ if __name__ == "__main__":
   
   # print(model)
   print(":: Number of params:", sum(p.numel() for p in model.parameters()))
-
+  resume = False
   if args.restart_path is not None:
-    print(f":: Found restart_path {args.restart_path}")
     model.load_state_dict(torch.load(args.restart_path))
+    resume = True
+    print(f":: Found restart_path {args.restart_path} | Setting resume: {resume}")
 
   # let's not initialise the weights and pytorch take care of it
   # model.apply(init_weights) # initialise weights
 
   # now that we can load any number of datasets from different folder
   # this is the master copy of all the folders
-  # folders = {
-  #   "flickr_folder":"../flickr30k_images/",
-  #   "imagenet_folder":"../ImageNet-Datasets-Downloader/data/",
-  #   "coco_train_folder":"../train2017/",
-  #   "coco_val_folder":"../val2017/",
-  #   "coco_unlabeled":"../unlabeled2017/",
-  #   "yfcc100m_folder":"../yfcc100m-downloader/data/",
-  #   "lfw":"../lfw/",
-  #   "stanford_dog":"../Images/",
-  #   "img_genome2":"../VG_100K_2/",
-  #   "img_genome1":"../VG_100K/",
-  #   "pascal_voc":"../VOCdevkit/",
-  #   "mnist":"../mnist_jpeg/",
-  #   "svhn":"../svhn/"
-  # }
-
   folders = {
     "openimages256": "../downsampled-open-images-v4/",
     "food-101": "../food-101/",
@@ -564,7 +554,7 @@ if __name__ == "__main__":
 
   local_run=""
   if WANDB:
-    wandb.init(project="vq-vae")
+    wandb.init(project="vq-vae", resume = resume)
     wandb.watch(model) # watch the model metrics
     local_run=str(uuid4())[:8] + "_"
     print(":: Local Run ID:", local_run)

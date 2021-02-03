@@ -6,16 +6,38 @@ OpenAI's [dall-e](https://openai.com/blog/dall-e/) is a kick ass model that take
 
 ## Stream
 
-I am streaming the progress of this side-project on [Youtube](https://www.youtube.com/watch?v=B1UY8G44N3U&t=3019s), do check it out. 
+I am streaming the progress of this side-project on [Youtube](https://www.youtube.com/watch?v=B1UY8G44N3U), do check it out. 
+
+## Datasets
+
+Originally I was a fool who scraped images for the dataset, that is a very stupid process. Instead I should have first gone for [academictorrents.com](https://academictorrents.com/). This is a list of datasets I will be using in v2 of this model (these are just for training the AutoEncoder model):
+|name|size|image_count|link|used|
+|-|-|-|-|-|
+|Downscale OpenImagesv4|16GB|1.9M|[torrent](https://academictorrents.com/details/9208d33aceb2ca3eb2beb70a192600c9c41efba1)|✅|
+|Stanford STL-10|2.64GB|113K|[torrent](https://academictorrents.com/details/a799a2845ac29a66c07cf74e2a2838b6c5698a6a)|✅|
+|CVPR Indoor Scene Recognition|2.59GB|15620|[torrent](https://academictorrents.com/details/59aa0ad684e5d849f68bad9a6d43a9000a927164)|✅|
+|The Visual Genome Dataset v1.0 + v1.2 Images|15.20GB|108K|[torrent](https://academictorrents.com/details/1bfe6871046860a2ff8c0cc1414318beb35dc916)|✅|
+|Food-101|5.69GB|101K|[torrent](https://academictorrents.com/details/470791483f8441764d3b01dbc4d22b3aa58ef46f)|✅|
+|The Street View House Numbers (SVHN) Dataset|2.64GB|600K|[torrent](https://academictorrents.com/details/6f4caf3c24803d114c3cae3ab9cb946cd23c7213)|✅|
+|Downsampled ImageNet 64x64|12.59GB|1.28M|[torrent](https://academictorrents.com/details/96816a530ee002254d29bf7a61c0c158d3dedc3b)|✅|
+|COCO 2017|52.44GB|287K|[torrent](https://academictorrents.com/details/74dec1dd21ae4994dfd9069f9cb0443eb960c962) [website](https://cocodataset.org/#download)| |
+|Yelp Restaurant Photo Classification Data (Has Duplicates)|14.14GB|NA|[torrent](https://academictorrents.com/details/19c3aa2166d7bfceaf3d76c0d36f812e0f1b87bc)| |
+|Flickr 30k Captions (bad data, downloads duplicates)|8GB|31K|[kaggle](https://www.kaggle.com/hsankesara/flickr-image-dataset)| |
+
+In order to download the files please refer to the instructions in [download.txt](download.txt).
+
+Of these datasets `Visual Genome, COCO, Flickr30K` has captions assosicated with the image. Rest of them have classes asssociated with each one of the images. We can then create create extra captions for each of the images using pretrained models like GPT-2.
 
 ## Training
+
+### Variational AutoEncoder
 
 First step is to clean the data using an extra script provided `python3 clean_data.py`. **Note** that you need to update the `folders` as per your requirements. Train a discrete VAE easily by running:
 ```
 python3 discrete_vae.py
 ```
 
-It turns out training a VAE is not an easy task I trained using SGD but the training was taking too long and kept collapsing. Adam with gradient clipping works best. After training over a 90 models I found out that the best model was with `res:64, batch_size:128, num_embedding:1024, mid_res:16`. The models with larger mid size ie. where the low dimensional resolution is <4x the original resolution. Below is a sample from above configuration:
+<!-- It turns out training a VAE is not an easy task I trained using SGD but the training was taking too long and kept collapsing. Adam with gradient clipping works best. After training over a 90 models I found out that the best model was with `res:64, batch_size:128, num_embedding:1024, mid_res:16`. The models with larger mid size ie. where the low dimensional resolution is <4x the original resolution. Below is a sample from above configuration:
 
 <img src="assets/128_64_1024.gif">
 
@@ -26,25 +48,26 @@ Where as what happens with config `res:128, batch_size:128, num_embedding:1024, 
 Final version of the model used the following configuration:
 ```
 :: Dataset: <BabyDallEDataset (train) openimages256:2010097|food-101:101000|imagenet_train64x64:0 svhn:248823|genome1:64346|genome2:43903|stl10:88515|total:2556684>
+``` -->
+
+It turns out training a VAE is not an easy task I trained using SGD but the training was taking too long and kept collapsing. Adam with gradient clipping works best. After training 100 models ([wandb](https://wandb.ai/yashbonde/vq-vae)) this configuration has the best size/performance: 
+```
+in_channels:    3
+embedding_dim:  200
+num_embeddings: 2048
+hidden_dims:    [200, 300, 400]
+add_residual:   False
 ```
 
-## Datasets
+And the dataset looks like this:
+```
+:: Dataset: <BabyDallEDataset (train) openimages256:1910396|food-101:101000|svhn:248823|indoor:15614|imagenet_train64x64:1331148|stl10:13000|genome1:64346|genome2:43733|total:3728060|train:3705691>
+```
 
-Originally I was a fool who scraped images for the dataset, that is a very stupid process. Instead I should have first gone for [academictorrents.com](https://academictorrents.com/). This is a list of datasets I will be using in v2 of this model (these are just for training the AutoEncoder model):
-|name|size|image_count|link|used|
-|-|-|-|-|-|
-|Downscale OpenImagesv4|16GB|1.9M|[torrent](https://academictorrents.com/details/9208d33aceb2ca3eb2beb70a192600c9c41efba1)|✅|
-|Stanford STL-10|2.64GB|113K|[torrent](https://academictorrents.com/details/a799a2845ac29a66c07cf74e2a2838b6c5698a6a)|✅|
-|The Visual Genome Dataset v1.0 + v1.2 Images|15.20GB|108K|[torrent](https://academictorrents.com/details/1bfe6871046860a2ff8c0cc1414318beb35dc916)|✅|
-|COCO 2017|52.44GB|287K|[torrent](https://academictorrents.com/details/74dec1dd21ae4994dfd9069f9cb0443eb960c962) [website](https://cocodataset.org/#download)| |
-|Yelp Restaurant Photo Classification Data (Has Duplicates)|14.14GB|NA|[torrent](https://academictorrents.com/details/19c3aa2166d7bfceaf3d76c0d36f812e0f1b87bc)| |
-|CVPR Indoor Scene Recognition|2.59GB|15620|[torrent](https://academictorrents.com/details/59aa0ad684e5d849f68bad9a6d43a9000a927164)| |
-|Flickr 30k Captions (bad data, downloads duplicates)|8GB|31K|[kaggle](https://www.kaggle.com/hsankesara/flickr-image-dataset)| |
-|Food-101|5.69GB|101K|[torrent](https://academictorrents.com/details/470791483f8441764d3b01dbc4d22b3aa58ef46f)|✅|
-|The Street View House Numbers (SVHN) Dataset|2.64GB|600K|[torrent](https://academictorrents.com/details/6f4caf3c24803d114c3cae3ab9cb946cd23c7213)|✅|
-|Downsampled ImageNet 64x64|12.59GB|1.28M|[torrent](https://academictorrents.com/details/96816a530ee002254d29bf7a61c0c158d3dedc3b)|✅|
+Once the model is trained you can actaully visualise the embeddings learned (`codebook`) to obtain the textures (cool right!):
 
-Of these datasets `Visual Genome, COCO, Flickr30K` has captions assosicated with the image. Rest of them have classes asssociated with each one of the images. We can then create create extra captions for each of the images using pretrained models like GPT-2.
+<img src="assets/textures_2048.png" height=500px>
+
 
 # Credits
 
