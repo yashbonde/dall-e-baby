@@ -108,6 +108,14 @@ class BabyDallEDataset(Dataset):
     return len(self.files)
 
   def __getitem__(self, i):
+    # parallel = torch.utils.data.get_worker_info()
+    # if parallel is None:
+    #   # this is single worker process
+    #   return self.t(Image.open(self.files[i]).convert('RGB'))
+    
+    # for parallel we use the sharding method where certain sections
+    # are loaded by certain processes only
+    # id, num_workers, seed, dataset = parallel
     return self.t(Image.open(self.files[i]).convert('RGB'))
 
 # ----- model
@@ -124,6 +132,12 @@ class ResidualLayer(nn.Module):
 
   def forward(self, input):
     return input + self.resblock(input)
+
+
+class QuickGELU(nn.Module):
+  # https://github.com/openai/CLIP/blob/main/clip/model.py
+  def forward(self, x):
+    return x * torch.sigmoid(1.702 * x)
 
 
 class VQVAE_Encoder_v2(nn.Module):
@@ -149,16 +163,16 @@ class VQVAE_Encoder_v2(nn.Module):
       modules.append(nn.Sequential(
         nn.Conv2d(in_channels, out_channels=h_dim, kernel_size=4, stride=2, padding=1),
         nn.BatchNorm2d(h_dim),
-        nn.LeakyReLU()
+        QuickGELU()
       ))
       in_channels = h_dim
       if add_residual:
         modules.append(ResidualLayer(in_channels, in_channels))
-        modules.append(nn.LeakyReLU())
+        modules.append(QuickGELU())
 
     modules.append(nn.Sequential(
         nn.Conv2d(in_channels, num_embeddings, kernel_size=1, stride=1),
-        # nn.LeakyReLU()
+        # QuickGELU()
     ))
 
     self.encoder = nn.Sequential(*modules)
@@ -189,7 +203,7 @@ class VQVAE_Decoder_v2(nn.Module):
     modules.append(nn.Sequential(
       nn.ConvTranspose2d(embedding_dim, hidden_dims[-1], kernel_size=3, stride=1, padding=1),
       nn.BatchNorm2d(hidden_dims[-1]),
-      nn.LeakyReLU()
+      QuickGELU()
     ))
     hidden_dims.reverse()
     hidden_dims = hidden_dims + [out_channels]  # add the last layer in it
@@ -198,14 +212,14 @@ class VQVAE_Decoder_v2(nn.Module):
     for i in range(last):
       if add_residual:
         modules.append(ResidualLayer(hidden_dims[i], hidden_dims[i]))
-        modules.append(nn.LeakyReLU())
+        modules.append(QuickGELU())
 
       # we need a tanh activation for the last layer not LReLU
       if i != last-1:
         modules.append(nn.Sequential(
           nn.ConvTranspose2d(hidden_dims[i], hidden_dims[i + 1], kernel_size=4, stride=2, padding=1),
           nn.BatchNorm2d(hidden_dims[i + 1]),
-          nn.LeakyReLU()
+          QuickGELU()
         ))
       else:
         modules.append(nn.Sequential(
@@ -335,7 +349,8 @@ class DiscreteVAETrainer:
         dataset=train_data,
         batch_size=bs,
         pin_memory=True,    # for CUDA
-        shuffle=True        # of course, my stupid ass didn't do it for first 74 runs
+        shuffle=True,       # of course, my stupid ass didn't do it for first 74 runs
+        num_workers=4       # number of workers for parallel loading 
       )
       pbar=trange(epoch_step)
       for d, loop_idx in zip(dl, pbar):
@@ -370,7 +385,8 @@ class DiscreteVAETrainer:
             dataset=test_data,
             batch_size=test_batch_size, # testing can run larger batches
             pin_memory=True,            # for CUDA
-            shuffle=False               # to ensure we can see the progress being made
+            shuffle=False,              # to ensure we can see the progress being made
+            num_workers=4               # number of workers for parallel loading
           )
           model=model.eval() # convert model to testing mode
           epoch_step_test=len(test_data) // test_batch_size + int(len(test_data) % test_batch_size != 0)
@@ -409,10 +425,22 @@ class DiscreteVAETrainer:
     self.save_checkpoint(ckpt_path=f"{folder_path}/vae_end.pt")
 
 
+# def init_weights(module):
+#   if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv2d, nn.ConvTranspose2d)):
+#     module.weight.data.normal_(mean=0.0, std=0.02)
+#     if isinstance(module, nn.Linear) and module.bias is not None:
+#       module.bias.data.zero_()
+#   elif isinstance(module, (nn.LayerNorm)):
+#     module.bias.data.zero_()
+#     module.weight.data.fill_(1.0)
+
+
 def init_weights(module):
-  if isinstance(module, (nn.Linear, nn.Embedding, nn.Conv2d, nn.ConvTranspose2d)):
-    module.weight.data.normal_(mean=0.0, std=0.02)
-    if isinstance(module, nn.Linear) and module.bias is not None:
+  """Initialise all the weights by standard deviation = root of channel"""
+  if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+    weight_dim = module.weight.size(1)
+    nn.init.normal_(module.weight, std=weight_dim ** -0.5)
+    if module.bias is not None:
       module.bias.data.zero_()
   elif isinstance(module, (nn.LayerNorm)):
     module.bias.data.zero_()
@@ -421,13 +449,13 @@ def init_weights(module):
 
 if __name__ == "__main__":
   args=argparse.ArgumentParser(description="script to train a Discrete VAE model")
-  args.add_argument("--embedding_dim", type=int, default=200, help="embedding dimension to use")
+  args.add_argument("--embedding_dim", type=int, default=300, help="embedding dimension to use")
   args.add_argument("--res", type=int, default=128, help="resolution of the image")
-  args.add_argument("--num_embeddings", type=int, default=2048, help="number of embedding values to use")
+  args.add_argument("--num_embeddings", type=int, default=3000, help="number of embedding values to use")
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
-  args.add_argument("--test_every", type=int, default=1800, help="test model after these steps")
-  args.add_argument("--batch_size", type=int, default=64, help="minibatch size")
+  args.add_argument("--test_every", type=int, default=900, help="test model after these steps")
+  args.add_argument("--batch_size", type=int, default=144, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=2, help="number of epochs to train for")
   args.add_argument(
     "--model", type=str, default="vqvae3",
@@ -513,7 +541,7 @@ if __name__ == "__main__":
     print(f":: Found restart_path {args.restart_path} | Setting resume: {resume}")
 
   # let's not initialise the weights and pytorch take care of it
-  # model.apply(init_weights) # initialise weights
+  model.apply(init_weights) # initialise weights
 
   # now that we can load any number of datasets from different folder
   # this is the master copy of all the folders

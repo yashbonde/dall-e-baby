@@ -1,9 +1,8 @@
-# Vast.ai machines are super barebones and so we need to install a lot of things
-apt install -y git; apt-get update; apt install git --fix-missing; apt install -y htop unzip wget aria2; git clone https://github.com/yashbonde/dall-e-baby.git;
+# Vast.ai machines are super barebones and so we need to install a lot of shit
+apt install -y git htop unzip wget aria2; apt-get update; apt install git --fix-missing; git clone https://github.com/yashbonde/dall-e-baby.git;
 
 # download all the files using commands below
-wget https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip;                               # visual Genome-1
-wget https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip;                              # visual Genome-2
+aria2c https://academictorrents.com/download/1bfe6871046860a2ff8c0cc1414318beb35dc916.torrent; # Visual Genome
 aria2c https://academictorrents.com/download/96816a530ee002254d29bf7a61c0c158d3dedc3b.torrent; # imagenet
 aria2c https://academictorrents.com/download/a799a2845ac29a66c07cf74e2a2838b6c5698a6a.torrent; # STL-10
 aria2c https://academictorrents.com/download/470791483f8441764d3b01dbc4d22b3aa58ef46f.torrent; # food-101
@@ -13,7 +12,6 @@ aria2c https://academictorrents.com/download/6f4caf3c24803d114c3cae3ab9cb946cd23
 # extract visual Genome
 unzip -q images.zip;
 unzip -q images2.zip;
-rm images.zip images2.zip;
 
 # extract imagenet
 cd small;
