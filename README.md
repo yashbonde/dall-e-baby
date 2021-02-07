@@ -28,10 +28,19 @@ In order to download the files please refer to the instructions in [download.txt
 
 ### Caption Datasets
 
-Of the datasets above `Visual Genome, COCO, Flickr30K` has captions assosicated with the image. Rest of them have classes asssociated with each one of the images. In order to generate captions for the datasets run the script `python3 generate_captions.py` you need to have the above mentioned datasets on your system to do that.
-
-We use a number of pretrained models like GPT-2, T5 and CLIP to create create captions for each of the images when there is none from it's labels.
-
+Of the datasets above `Visual Genome, COCO, Flickr30K` has captions assosicated with the image. Rest of them have classes asssociated with each one of the images. In order to generate captions for the datasets run the script `python3 generate_captions.py` you need to have the above mentioned datasets on your system to do that. This will log all the details and create a json that looks like this (ignore double `open_images` :P):
+```json
+{
+  "open_images_open_images_0123e1f263cf714f": {
+      "path": "../downsampled-open-images-v4/256px/validation/0123e1f263cf714f.jpg",
+      "caption": "low res photo of human hand"
+  },
+  "open_images_open_images_0124faec67465fe5": {
+      "path": "../downsampled-open-images-v4/256px/validation/0124faec67465fe5.jpg",
+      "caption": "low resolution picture of plant, mammal, person, sculpture"
+  }
+}
+```
 
 ## Training
 
