@@ -37,7 +37,6 @@ Of the datasets above `Visual Genome, COCO, Flickr30K` has captions assosicated 
   "indoor_15613": {
     "path": "../indoorCVPR/winecellar/wine_storage_42_07_altavista.jpg",
     "caption": "low res photo of winecellar"
-    }
   }
 }
 ```
@@ -77,9 +76,6 @@ In order to train the transformer model run the script:
 ```
 python3 train_transformer.py
 ```
-
- for captions from imagenet.
-
 
 # Credits
 
