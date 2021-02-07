@@ -285,6 +285,18 @@ class VQVAE_v3(nn.Module):
       add_residual=add_residual,
     )
 
+  def _encode_image(self, input):
+    encoding = self.encoder(input)
+    softmax = F.softmax(encoding, dim=1)
+    softmax = softmax.scatter_(1, torch.argmax(softmax, dim=1).unsqueeze(1), 1)
+    encoding_ids = torch.argmax(softmax, dim=1).view(encoding.size(0), -1)
+    return encoding_ids
+
+  def _decode_ids(self, softmax):
+    quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
+    recons = self.decoder(quantized_inputs)
+    return recons
+
   def forward(self, input, v=False):
     # first step is to pass the image through encoder and get the embeddings
     encoding=self.encoder(input)
