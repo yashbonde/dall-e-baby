@@ -108,6 +108,27 @@ class BabyDallEDataset(Dataset):
     return len(self.files)
 
   def __getitem__(self, i):
+    """
+    Does pytorch handle multiple workers automatically? Are duplicate samples
+    returned. I don't think so. Test like this:
+    ```
+    class DSSimple(Dataset):
+      def __init__(self):
+        super().__init__()
+        self.x = torch.arange(124)
+      def __len__(self):
+        return self.x.shape[0]
+      def __getitem__(self, i):
+        return self.x[i]
+    
+    for x in DataLoader(
+        dataset = DSSimple(), batch_size = 10, num_workers = 4,
+        shuffle = False, drop_last = True
+      ):
+      print(x)
+    ```
+    """
+
     # parallel = torch.utils.data.get_worker_info()
     # if parallel is None:
     #   # this is single worker process
@@ -116,6 +137,7 @@ class BabyDallEDataset(Dataset):
     # for parallel we use the sharding method where certain sections
     # are loaded by certain processes only
     # id, num_workers, seed, dataset = parallel
+
     return self.t(Image.open(self.files[i]).convert('RGB'))
 
 # ----- model
@@ -333,7 +355,11 @@ class DiscreteVAETrainer:
     img /= img.max()
     return img
 
-  def train(self, bs, n_epochs, lr, folder_path, skip_steps, test_every=500, test_batch_size=None, **kwargs):
+  def train(
+      self, bs, n_epochs, lr, folder_path, skip_steps,
+      test_every=500, test_batch_size=None, save_every=None,
+      **kwargs
+    ):
     model=self.model
     train_data=self.train_dataset
     test_data=self.test_dataset
@@ -416,8 +442,9 @@ class DiscreteVAETrainer:
           test_loss=np.mean(test_loss)
           if WANDB:
             wandb.log({"test_loss": test_loss})
-
           print(":::: Loss:", test_loss)
+
+        if gs and save_every and gs % save_every == 0:
           self.save_checkpoint(ckpt_path=f"{folder_path}/vae_{gs}.pt")
           model=model.train()  # convert model back to training mode
 
@@ -442,7 +469,7 @@ def init_weights(module):
     nn.init.normal_(module.weight, std=weight_dim ** -0.5)
     if module.bias is not None:
       module.bias.data.zero_()
-  elif isinstance(module, (nn.LayerNorm)):
+  elif isinstance(module, (nn.LayerNorm, nn.BatchNorm2d)):
     module.bias.data.zero_()
     module.weight.data.fill_(1.0)
 
@@ -455,7 +482,8 @@ if __name__ == "__main__":
   args.add_argument("--n_layers", type=int, default=4, help="number of layers in the model")
   args.add_argument("--lr", type=float, default=2e-4, help="learning rate for the model")
   args.add_argument("--test_every", type=int, default=900, help="test model after these steps")
-  args.add_argument("--batch_size", type=int, default=144, help="minibatch size")
+  args.add_argument("--save_every", type=int, default=1800, help="save model after these steps")
+  args.add_argument("--batch_size", type=int, default=64, help="minibatch size")
   args.add_argument("--n_epochs", type=int, default=2, help="number of epochs to train for")
   args.add_argument(
     "--model", type=str, default="vqvae3",
@@ -475,7 +503,8 @@ if __name__ == "__main__":
 
   # set seed to ensure everything is properly split
   set_seed(args.seed)
-  folder_path = f"./model_{args.model}_{args.res}_{args.embedding_dim}_{args.num_embeddings}_{int(args.add_residual)}"
+  folder_path = f"./{args.model}_{args.res}_{args.embedding_dim}_"+\
+    f"{args.num_embeddings}_{int(args.add_residual)}_{args.batch_size}"
   print(f":: Will Save data in {folder_path}")
   os.makedirs(folder_path, exist_ok=True)
 
@@ -594,5 +623,6 @@ if __name__ == "__main__":
     skip_steps=args.skip_steps,
     unk_id=local_run,
     test_every=args.test_every,
+    save_every=args.save_every,
     folder_path=folder_path
   )

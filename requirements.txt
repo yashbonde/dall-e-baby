@@ -1,1 +1,6 @@
 wandb==0.10.12
+h5py
+matplotlib
+tabulate
+pandas
+trasnformers

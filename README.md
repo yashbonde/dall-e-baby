@@ -69,7 +69,7 @@ In order to train the transformer model run the script:
 python3 train_transformer.py
 ```
 
-https://github.com/modestyachts/ImageNetV2_pytorch for captions from imagenet.
+ for captions from imagenet.
 
 
 # Credits

@@ -2,7 +2,6 @@ import os
 import subprocess
 import numpy as np
 from PIL import Image
-from tqdm import trange
 from multiprocessing import Process, cpu_count
 
 # STL-10 files come as a binary that need to be converted to images to make them useful
