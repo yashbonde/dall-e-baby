@@ -6,3 +6,5 @@ wandb/
 .DS_Store
 *.json
 models/
+cifar-10*
+transVAE*

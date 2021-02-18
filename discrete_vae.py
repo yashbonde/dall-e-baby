@@ -370,6 +370,7 @@ class DiscreteVAETrainer:
   def train(
       self, bs, n_epochs, lr, folder_path, skip_steps,
       test_every=500, test_batch_size=None, save_every=None,
+      gradient_accumulation_steps = 1.,
       **kwargs
     ):
     model=self.model
@@ -388,7 +389,7 @@ class DiscreteVAETrainer:
         batch_size=bs,
         pin_memory=True,    # for CUDA
         shuffle=True,       # of course, my stupid ass didn't do it for first 74 runs
-        num_workers=4       # number of workers for parallel loading 
+        num_workers=1       # number of workers for parallel loading 
       )
       pbar=trange(epoch_step)
       for d, loop_idx in zip(dl, pbar):
@@ -407,10 +408,12 @@ class DiscreteVAETrainer:
           wandb.log({"loss": loss.item()})
 
         # gradient clipping
-        optim.zero_grad()
+        loss = loss / gradient_accumulation_steps
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
-        optim.step()
+        if gs and gs % gradient_accumulation_steps == 0:
+          optim.zero_grad()
+          torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
+          optim.step()
         gs += 1
         train_losses.append(loss.item())
 
@@ -424,9 +427,9 @@ class DiscreteVAETrainer:
             batch_size=test_batch_size, # testing can run larger batches
             pin_memory=True,            # for CUDA
             shuffle=False,              # to ensure we can see the progress being made
-            num_workers=4               # number of workers for parallel loading
+            num_workers=1               # number of workers for parallel loading
           )
-          model=model.eval() # convert model to testing mode
+          model.eval() # convert model to testing mode
           epoch_step_test=len(test_data) // test_batch_size + int(len(test_data) % test_batch_size != 0)
           pbar_test=trange(epoch_step_test)
           test_loss=[]
@@ -458,7 +461,9 @@ class DiscreteVAETrainer:
 
         if gs and save_every and gs % save_every == 0:
           self.save_checkpoint(ckpt_path=f"{folder_path}/vae_{gs}.pt")
-          model=model.train()  # convert model back to training mode
+        # ------ testing ends
+        model.train()  # convert model back to training mode
+        exit()
 
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"{folder_path}/vae_end.pt")
@@ -511,6 +516,10 @@ if __name__ == "__main__":
   args.add_argument("--skip_steps", type=int, default=0, help="number of steps to skip when restarting")
   args.add_argument("--restart_path", type=str, default=None, help="path to the model that is to be restarted")
   args.add_argument("--seed", type=int, default=3, help="seed value") # 3 = my misha
+  args.add_argument(
+    "--gradient_accumulation_steps", type=int, default=2.,
+    help="perform backward pass after these global steps"
+  )
   args=args.parse_args()
 
   # set seed to ensure everything is properly split

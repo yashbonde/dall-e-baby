@@ -70,12 +70,9 @@ Once the model is trained you can actaully visualise the embeddings learned (`co
 
 This model took >12 hours of training.
 
-### Transformer GPT
+### Transformer
 
-In order to train the transformer model run the script:
-```
-python3 train_transformer.py
-```
+The transformer model is given in `model.py` file and to train it you need to run the script `python3 train_transformer.py`.
 
 # Credits
 
