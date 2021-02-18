@@ -321,7 +321,10 @@ class VQVAE_v3(nn.Module):
       # we can also improve this by introducing the argmax method, since we know that
       # during testing we do not need the gradient we can get away with it. We simply
       # create the same shape as we would get in the Gumbel distribution
-      softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
+
+      # I can't get the scatter thingy working
+      # softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
+      softmax = F.one_hot(torch.argmax(softmax, dim = 1))
 
     # we can also convert the softmax distribution to argmax and identify the final ids
     # to use for language model
@@ -463,7 +466,6 @@ class DiscreteVAETrainer:
           self.save_checkpoint(ckpt_path=f"{folder_path}/vae_{gs}.pt")
         # ------ testing ends
         model.train()  # convert model back to training mode
-        exit()
 
     print("EndSave")
     self.save_checkpoint(ckpt_path=f"{folder_path}/vae_end.pt")

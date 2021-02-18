@@ -244,20 +244,20 @@ class TransformerVAE(nn.Module):
     enc_out = self.enc(x)  # [B, (H*W)//16, n_embd]
     if self.codebook is not None:
       if self.training:
-        softmax = F.gumbel_softmax(enc_out, tau=1., hard=True, dim=1)
+        softmax = F.gumbel_softmax(enc_out, tau=1., hard=True, dim=-1)
       else:
-        softmax = F.softmax(enc_out, dim=1)
-        softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
+        softmax = F.softmax(enc_out, dim=-1)
+        softmax = F.one_hot(torch.argmax(softmax, dim=-1))
       quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
     else:
       if self.training:
-        softmax = F.gumbel_softmax(enc_out, tau=1., hard=True, dim=1)
+        softmax = F.gumbel_softmax(enc_out, tau=1., hard=True, dim=-1)
       else:
-        softmax = F.softmax(enc_out, dim=1)
-        softmax = softmax.scatter_(1, torch.argmax(softmax, dim=1).unsqueeze(1), 1)
+        softmax = F.softmax(enc_out, dim=-1)
+        softmax = F.one_hot(torch.argmax(softmax, dim=-1))
       quantized_inputs = softmax
     
-    encoding_ids = torch.argmax(softmax, dim=1).view(enc_out.size(0), -1)
+    encoding_ids = torch.argmax(softmax, dim=-1).view(enc_out.size(0), -1)
     dec_out = self.dec(quantized_inputs)
     loss = F.mse_loss(dec_out, x)
 
