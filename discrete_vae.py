@@ -288,7 +288,10 @@ class VQVAE_v3(nn.Module):
   def _encode_image(self, input):
     encoding = self.encoder(input)
     softmax = F.softmax(encoding, dim=1)
-    softmax = softmax.scatter_(1, torch.argmax(softmax, dim=1).unsqueeze(1), 1)
+    softmax = F.one_hot(
+        torch.argmax(softmax, dim=1),
+        num_classes=softmax.size(1)
+    ).permute((0, 3, 1, 2)).float()
     encoding_ids = torch.argmax(softmax, dim=1).view(encoding.size(0), -1)
     return encoding_ids
 
@@ -296,6 +299,11 @@ class VQVAE_v3(nn.Module):
     quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
     recons = self.decoder(quantized_inputs)
     return recons
+
+  def norm_img(self, img):
+    img -= img.min()
+    img /= img.max()
+    return img
 
   def forward(self, input, v=False):
     # first step is to pass the image through encoder and get the embeddings
@@ -322,9 +330,13 @@ class VQVAE_v3(nn.Module):
       # during testing we do not need the gradient we can get away with it. We simply
       # create the same shape as we would get in the Gumbel distribution
 
-      # I can't get the scatter thingy working
-      # softmax = softmax.scatter_(1, torch.argmax(softmax, dim = 1).unsqueeze(1), 1)
-      softmax = F.one_hot(torch.argmax(softmax, dim = 1))
+      # The previous code I used for scatter was wrong, meaning in all the models
+      # the test image generated was far worse than what the model was actually
+      # producing
+      softmax = F.one_hot(
+        torch.argmax(softmax, dim = 1),
+        num_classes = softmax.size(1)
+      ).permute((0, 3, 1, 2)).float()
 
     # we can also convert the softmax distribution to argmax and identify the final ids
     # to use for language model

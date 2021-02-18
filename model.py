@@ -33,7 +33,8 @@ class Vqvae:
         hidden_dims=self.hidden_dims,
         add_residual=self.add_residual,
     )
-    model.load_state_dict(torch.load(self.model_path))
+    map_location = "cpu" if not torch.cuda.is_available() else "cuda"
+    model.load_state_dict(torch.load(self.model_path, map_location=map_location))
     model.eval()
     return model
 
