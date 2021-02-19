@@ -4,6 +4,14 @@
 
 OpenAI's [dall-e](https://openai.com/blog/dall-e/) is a kick ass model that takes in a natural language prompt and generates an images based on that. Now I cannot recreate the complete Dall-E so I make the baby version of it trained in CIFAR10-100 dataset. If Dall-E is picasso this is well... shit.
 
+## Results
+
+First step is training the discreteVAE and you can see the results below:
+
+<img src="assets/header2.png" width=1000px>
+
+In the next step we train on 2.3Mn captions and images datasets and you can see the results below [**In Progress**].
+
 ## Stream
 
 I am streaming the progress of this side-project on [Youtube](https://www.youtube.com/watch?v=B1UY8G44N3U), do check it out. 
@@ -72,7 +80,7 @@ This model took >12 hours of training.
 
 ### Transformer
 
-The transformer model is given in `model.py` file and to train it you need to run the script `python3 train_transformer.py`.
+The code for transformer model and training is given in `dalle.py`. The model is a straight forward dense transformer without any sparse attention (next in the pipeline). For this part we need to generate captions which are done using `generate_captions.py` or you can also use [`captions.ipynb`](./captions.ipynb) for visual approach.
 
 # Credits
 

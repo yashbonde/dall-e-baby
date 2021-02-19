@@ -1,6 +1,7 @@
 # this file has the transformer model
 
 import os
+import math
 import json
 import torch
 import numpy as np
@@ -17,7 +18,7 @@ from torch.utils.data import DataLoader
 from discrete_vae import VQVAE_v3, transforms, set_seed
 
 from transformers import GPT2Config
-from transformers.models.gpt2.modeling_gpt2 import Block
+from transformers.models.gpt2.modeling_gpt2 import Block, MLP
 
 
 WANDB = os.getenv("WANDB")
@@ -29,6 +30,96 @@ plt.rcParams.update({
   'font.size': 10
 })
 
+# ------ helper functions
+
+def configure_optimizers(model, lr, weight_decay = 0.1, betas=(0.9, 0.999)):
+    """
+    from karpathy/minGPT
+    This long function is unfortunately doing something very simple and is being very defensive:
+    We are separating out all parameters of the model into two buckets: those that will experience
+    weight decay for regularization and those that won't (biases, and layernorm/embedding weights).
+    We are then returning the PyTorch optimizer object.
+    """
+    # separate out all parameters to those that will and won't experience regularizing weight decay
+    decay = set()
+    no_decay = set()
+    whitelist_weight_modules = (torch.nn.Linear, MLP, Block)
+    blacklist_weight_modules = (torch.nn.LayerNorm, torch.nn.Embedding) # add denorm here
+    for mn, m in model.named_modules():
+        for pn, p in m.named_parameters():
+            fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
+            if "vae" in fpn:
+              continue
+
+            pn_type = pn.split(".")[-1]
+            if pn_type == 'bias':
+                # all biases will not be decayed
+                no_decay.add(fpn)
+            elif (
+                (pn_type == 'weight' and isinstance(m, blacklist_weight_modules)) or
+                "ln" in fpn or
+                "positional_encoding" in fpn
+            ):
+                # weights of blacklist modules will NOT be weight decayed
+                no_decay.add(fpn)
+            elif pn_type == 'weight' and isinstance(m, whitelist_weight_modules):
+                # weights of whitelist modules will be weight decayed
+                decay.add(fpn)
+
+    # validate that we considered every parameter
+    param_dict = {pn: p for pn, p in model.named_parameters() if "vae" not in pn}
+    inter_params = decay & no_decay
+    union_params = decay | no_decay
+
+    assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params), )
+    assert len(param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
+                                                % (str(param_dict.keys() - union_params), )
+
+    # create the pytorch optimizer object
+    optim_groups = [
+        {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
+        {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+    ]
+    optimizer = torch.optim.AdamW(optim_groups, lr=lr, betas=betas)
+    return optimizer
+
+
+def init_weights(dalle, v=False):
+  # function to initiliase the parameters, .apply() has some problems like
+  # you cannot find the exact name and so there might be a "Linear" in part
+  # of network you do not want to modify. This looped approach gives a much
+  # better control over what happens
+  for n, p in dalle.named_parameters():
+    if "vae" in n:
+      # we do not want to reinit VAE
+      continue
+
+    m0 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
+    if "weight" in n and "ln_" not in n:
+      # this is linear weight
+      p.data.normal_(mean=0.0, std=0.2)
+
+    # layer norm
+    elif "ln_" in n:
+      if "bias" in n:
+        p.data.zero_()
+      else:
+        p.data.fill_(1.0)
+
+    elif "positional_encoding" in n:
+      # this is the positional encoding that was giving nightmares
+      # if you do not initialise it the network passes the `torch.empty()`
+      # through the network without giving a warning and keeps returning
+      # nan.
+      p.data.normal_(mean=0.0, std=0.2)
+
+    elif "bias" in n:
+      p.data.zero_()
+
+    m1 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
+    if v: print(n, "\t", m0, "\t", m1)
+
+# ------ model classes
 
 class Vqvae:
   """
@@ -228,8 +319,7 @@ class DallECaptions():
       self,
       captions_file,
       tokenizer_path,
-      train_idx,
-      train=False,
+      keys,
       res = 128,
       text_context_len=64
     ):
@@ -237,7 +327,7 @@ class DallECaptions():
     with open(captions_file, "r") as f:
       self.data = json.load(f)
     self.image_keys = list(self.data.keys())
-    self.indices = self.image_keys[:train_idx] if train else self.image_keys[train_idx:]
+    self.indices = keys
 
     # image related
     self.t = transforms.Compose([
@@ -261,7 +351,7 @@ class DallECaptions():
     image_keys = list(data.keys())
     np.random.shuffle(image_keys)
     train_idx = int(train_split*len(image_keys))
-    return train_idx
+    return image_keys[:train_idx], image_keys[train_idx:]
 
   def __len__(self):
     return len(self.indices)
@@ -277,7 +367,6 @@ class DallECaptions():
     # just force this to be very large, repeat is fine OpenAI DallE does this as well
     cap = x["caption"].lower() * 100
     text_tokens = self.tok.encode(cap).ids[:self.textlen - 1] + [self.text_end_id]
-
     return {
       "images": img,
       "text_tokens": torch.Tensor(text_tokens).long()
@@ -307,8 +396,17 @@ class DallETrainer():
     return img
 
   def train(
-    self, batch_size, n_epochs, lr, folder_path, skip_steps,
-    test_every=500, test_batch_size=None, patience=5,
+    self,
+    batch_size,
+    n_epochs,
+    lr,
+    folder_path,
+    skip_steps,
+    weight_decay = 1e-3,
+    warmup_perc=0.1,
+    test_every=1000,
+    test_batch_size=None,
+    patience=5,
     gradient_accumulation_steps: int=1,
   ):
     model = self.model
@@ -317,10 +415,11 @@ class DallETrainer():
     epoch_step = len(train_data) // batch_size + int(len(train_data) % batch_size != 0)
 
     # VAE is not to be optimised, named_parameters() gives more control
-    optim = torch.optim.Adam(
-      (p for n, p in dalle.named_parameters() if "vae" not in n),
-      lr=lr
-    )
+    # optim = torch.optim.Adam(
+    #   (p for n, p in dalle.named_parameters() if "vae" not in n),
+    #   lr=lr
+    # )
+    optim = configure_optimizers(model, lr, weight_decay, betas = (0.9, 0.99))
 
     gs = 0                 # global step counter
     train_losses = [-1]    # list with values of training losses at each step
@@ -330,6 +429,11 @@ class DallETrainer():
     break_training = False # flag is set when we run out of patience and want to break
                            # training for outer loop as well
     model.train()          # set model to training mode
+    _lr = 0                # set rolling _lr for logging dict
+    
+    # number of steps and warmup for LR scheduling
+    total_steps = int(epoch_step * n_epochs)
+    warmup_steps = int(warmup_perc * total_steps)
     
     if gradient_accumulation_steps > 1:
       eff_batch_size = gradient_accumulation_steps * batch_size
@@ -345,6 +449,7 @@ class DallETrainer():
           num_workers=8       # number of workers for parallel loading
       )
       pbar = trange(epoch_step)
+      model.zero_grad()
 
       for d, loop_idx in zip(dl, pbar):
         # don't train if we need to skip some steps but we do not want
@@ -355,22 +460,46 @@ class DallETrainer():
 
         # train the model
         d = {k: v.to(self.device) for k,v in d.items()}
-        pbar.set_description(
-            f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
+        pbar.set_description(f"[TRAIN - {epoch}] GS: {gs}, Loss: {round(train_losses[-1], 5)}")
         _, loss = model(**d, loss = True)
         loss = loss.mean()  # gather from multiple GPUs
-        if WANDB:
-          wandb.log({"loss": loss.item()})
+        log_dict = {"loss": loss.item()}
 
-        # gradient clipping
+        # backprop gradient acc. code:
+        # https://gist.github.com/thomwolf/ac7a7da6b1888c2eeac8ac8b9b05d3d3
         loss = loss / gradient_accumulation_steps
         loss.backward()
         if gs and gs % gradient_accumulation_steps == 0:
-          optim.zero_grad()
-          torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
+          torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
           optim.step()
+
+          # this needs to be done before each back prop so that gradients are pointing
+          # in the intended minimum. because this needs to be done before each loss.backward() pass
+          # I do it at the end of each step because in loop id would behave the same
+          # https://stackoverflow.com/questions/48001598/why-do-we-need-to-call-zero-grad-in-pytorch
+          model.zero_grad()
+          # ------ update ends
+
+        # decay based on our progress of training, picked from
+        # https://github.com/karpathy/minGPT/blob/master/mingpt/trainer.py
+        # since we are processing a fixed number of tokens in each step unlike LM-GPT
+        # we can let go of counting the processed tokens and instead just focus on the
+        # global steps processed
+        if gs < warmup_steps:
+          # linear warmup
+          lr_mult = gs / max(1, warmup_steps)
+        else:
+          # cosine decay
+          progress = (gs - warmup_steps) / max(1, total_steps - warmup_steps)
+          lr_mult = max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        _lr = lr * lr_mult
+        for param_group in optim.param_groups:
+          param_group['lr'] = _lr
+
         gs += 1
-        train_losses.append(loss.item())
+        train_losses.append(loss.item() * gradient_accumulation_steps)
+        log_dict.update({"lr": _lr})
 
         # ----- test loop
         if test_data != None and gs and gs % test_every == 0:
@@ -384,7 +513,8 @@ class DallETrainer():
             shuffle=False,              # to ensure we can see the progress being made
             num_workers=8               # number of workers for parallel loading
           )
-          model.eval() # convert model to testing mode
+          model.zero_grad() # remove any gradients from the model
+          model.eval()      # convert model to testing mode
 
           epoch_step_test=len(test_data) // test_batch_size + int(len(test_data) % test_batch_size != 0)
           pbar_test=trange(epoch_step_test)
@@ -403,18 +533,17 @@ class DallETrainer():
           for _i, (i, o, c) in enumerate(zip(d["images"][:10], gen_images[:10], captions_text)):
             i=self.norm_img(i.permute(1, 2, 0).cpu().numpy())
             o=self.norm_img(o.permute(1, 2, 0).cpu().numpy())
-            plt.title("\n".join(wrap(c, 20))[:100])
             plt.subplot(2, 10, _i + 1)
             plt.imshow(i)
             plt.subplot(2, 10, _i + 10 + 1)
             plt.imshow(o)
+            plt.title("\n".join(wrap(c, 20))[:100]) # should be at last
           plt.tight_layout()
           plt.savefig(f"{folder_path}/sample_{gs}.png")
           del fig # delete and save the warning
 
           test_loss = np.mean(test_loss)
-          if WANDB:
-            wandb.log({"test_loss": test_loss})
+          log_dict.update({"test_loss": test_loss})
           print(":::: Loss:", test_loss)
 
           if min_test_loss > test_loss:
@@ -431,8 +560,12 @@ class DallETrainer():
             break_training = True
             break
           model.train()  # convert model back to training mode
-        
+
         # ------ testing `if` ends
+        if WANDB:
+          wandb.log(log_dict)
+        else:
+          print(log_dict)
 
         if break_training: break
       # ------ epoch loop ends
@@ -441,57 +574,21 @@ class DallETrainer():
     # ------ training loop ends
 
 
-def init_weights(dalle, v=False):
-  # function to initiliase the parameters, .apply() has some problems like
-  # you cannot find the exact name and so there might be a "Linear" in part
-  # of network you do not want to modify. This looped approach gives a much
-  # better control over what happens
-  for n, p in dalle.named_parameters():
-    if "vae" in n:
-      # we do not want to reinit VAE
-      continue
-
-    m0 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
-    if "weight" in n and "ln_" not in n:
-      # this is linear weight
-      p.data.normal_(mean=0.0, std=0.2)
-
-    # layer norm
-    elif "ln_" in n:
-      if "bias" in n:
-        p.data.zero_()
-      else:
-        p.data.fill_(1.0)
-
-    elif "positional_encoding" in n:
-      # this is the positional encoding that was giving nightmares
-      # if you do not initialise it the network passes the `torch.empty()`
-      # through the network without giving a warning and keeps returning
-      # nan.
-      p.data.normal_(mean=0.0, std=0.2)
-
-    elif "bias" in n:
-      p.data.zero_()
-
-    m1 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
-    if v: print(n, "\t", m0, "\t", m1)
-
-
 if __name__ == "__main__":
   args = ArgumentParser(description= "train DallE transformer model")
-  args.add_argument("--vqvae", type=str, default="./vqvae3_128_325_3025_0_ckpt_30600.pt", help = "path to the VQVAE_v3 model file")
-  args.add_argument("--tokenizer", type=str, default="../tokenizer.json", help = "path to the tokenizer")
-  args.add_argument("--captions", type=str, default="../captions_train.json", help = "path to captions file")
-  args.add_argument("--text_context_len", type=int, default=128, help = "number of tokens in the text")
-  args.add_argument("--n_embd", type = int, default = 576, help = "embedding dimension of the model")
-  args.add_argument("--n_layers", type = int, default = 12, help = "number of attention layers")
-  args.add_argument("--n_heads", type = int, default = 12, help = "number of heads in MHA")
-  args.add_argument("--batch_size", type = int, default = 20, help = "minibatch size")
-  args.add_argument("--n_epochs", type = int, default = 2, help = "number of epochs to train for")
-  args.add_argument("--lr", type = int, default = 1e-5, help = "learning rate")
-  args.add_argument("--gas", type = int, default = 20, help = "gradient accumulation steps")
-  args.add_argument("--seed", type=int, default=3, help="seed value") # 3 = my misha
-  args.add_argument("--test_every", type=int, default=2, help="test every this steps")
+  args.add_argument("--vqvae", type=str, default="./vqvae3_128_325_3025_0_ckpt_30600.pt", help="path to the VQVAE_v3 model file")
+  args.add_argument("--tokenizer", type=str, default="../tokenizer.json", help="path to the tokenizer")
+  args.add_argument("--captions", type=str, default="../captions_train.json", help="path to captions file")
+  args.add_argument("--text_context_len", type=int, default=128, help="number of tokens in the text")
+  args.add_argument("--n_embd", type=int, default=576, help="embedding dimension of the model")
+  args.add_argument("--n_layers", type=int, default=12, help="number of attention layers")
+  args.add_argument("--n_heads", type=int, default=24, help="number of heads in MHA")
+  args.add_argument("--batch_size", type=int, default=20, help="minibatch size")
+  args.add_argument("--n_epochs", type=int, default=2, help="number of epochs to train for")
+  args.add_argument("--lr", type=int, default=1e-4, help="learning rate")
+  args.add_argument("--gas", type=int, default=10, help="gradient accumulation steps")
+  args.add_argument("--seed", type=int, default=3, help="seed value")  # 3 = my misha
+  args.add_argument("--test_every", type=int, default=4000, help="test every this steps")
   args.add_argument("--patience", type=int, default=5, help="stop training if no improvement in this steps")
   args = args.parse_args()
 
@@ -504,23 +601,21 @@ if __name__ == "__main__":
   os.makedirs(folder_path, exist_ok=True)
 
   train_split = 0.9995
-  train_split = DallECaptions.get_split(
+  train_keys, test_keys = DallECaptions.get_split(
       captions_file=args.captions, train_split=train_split)
   dallecaptions_train = DallECaptions(
     captions_file=args.captions,
     tokenizer_path=args.tokenizer,
     res=vqvae_arch.input_res,
+    keys=train_keys,
     text_context_len=args.text_context_len,
-    train=True,
-    train_idx=train_split
   )
   dallecaptions_test = DallECaptions(
     captions_file=args.captions,
     tokenizer_path=args.tokenizer,
     res=vqvae_arch.input_res,
+    keys=test_keys,
     text_context_len=args.text_context_len,
-    train=False,
-    train_idx=train_split
   )
   print("Train Size:", len(dallecaptions_train), "; Test Size:", len(dallecaptions_test))
 
@@ -541,8 +636,11 @@ if __name__ == "__main__":
     n_heads=args.n_heads
   )
   dalle = DallE(model.get_model(), transformer_config)
-  init_weights(dalle)
+  init_weights(dalle) # init weights manually
   print(":: Number of params:", sum(p.numel() for p in dalle.parameters()))
+  if WANDB:
+    wandb.init(project="dall-e", resume = False)
+    wandb.watch(dalle) # watch the model metrics
 
   # define the trainer
   trainer = DallETrainer(dallecaptions_train, dallecaptions_test, dalle)
@@ -554,7 +652,6 @@ if __name__ == "__main__":
     test_every=args.test_every,
     patience=args.patience,
     gradient_accumulation_steps=args.gas,
-    folder_path=folder_path
+    folder_path=folder_path,
+    weight_decay=0.01
   )
-
-

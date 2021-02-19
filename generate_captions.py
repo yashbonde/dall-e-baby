@@ -218,7 +218,7 @@ class CaptionGenerator():
   ]
 
   templates_maybe = [
-    *[x + " and maybe a picture containing {}" for x in templates_labels],
+    *[x + " and maybe containing {}" for x in templates_labels],
     *[x + " and possibly containing {}" for x in templates_labels],
     *[x + " and {} but not sure" for x in templates_labels],
     *[x + " also roughly {}" for x in templates_labels],
@@ -267,10 +267,10 @@ class CaptionGenerator():
       high_conf = ", ".join(ds[k]["label"][0])
       if np.random.random() > 0.5:
         low_conf = ", ".join(ds[k]["label"][1])
-        temp = np.random.choice(temps_low, size=1)
+        temp = np.random.choice(temps_low, size=1)[0]
         cap = temp.format(high_conf, low_conf)
       else:
-        temp = np.random.choice(temps_high, size = 1)
+        temp = np.random.choice(temps_high, size = 1)[0]
         cap = temp.format(high_conf)
       cap = re.sub(r"\s+", " ", cap).strip().lower()
       captions["open_images_" + str(k)] = {
@@ -380,7 +380,7 @@ if __name__ == "__main__":
   print("\n", "-"*70, "\n")
   print(tabulate(table, headers, tablefmt="psql"))
 
-  print("\nGenerating captions for labels")
+  print("\n:: Generating captions for labels")
 
   capgen = CaptionGenerator()
   capgen_oi_train = capgen.generate_captions(open_images_img2lab_train, "open_images")
