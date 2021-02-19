@@ -1,5 +1,4 @@
-# this file has the transformer model inspired from OpenAI CLIP code:
-# https://github.com/openai/CLIP/blob/main/clip/model.py
+# this file has the transformer model
 
 import os
 import json
@@ -12,7 +11,6 @@ from textwrap import wrap
 import matplotlib.pyplot as plt
 from tokenizers import Tokenizer
 from types import SimpleNamespace
-from collections import OrderedDict
 from argparse import ArgumentParser
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -95,6 +93,7 @@ class TransformerConfig():
     self.n_embd=n_embd
     self.n_layers=n_layers
     self.n_heads=n_heads
+    self.total_context_len = text_context_len + image_context_len
 
 
 class Transformer(nn.Module):
@@ -102,7 +101,7 @@ class Transformer(nn.Module):
     super().__init__()
     self.n_embd = n_embd
     self.n_layers = n_layers
-    transconfig = GPT2Config(
+    self.transconfig = GPT2Config(
       n_positions=total_context_len,
       n_ctx=total_context_len,
       n_embd=n_embd,
@@ -112,18 +111,18 @@ class Transformer(nn.Module):
     self.attn_mask = attn_mask
 
     # using the ResidualAttentionBlock from OpenAI was causing problems
-    # so using the huggingface GPT2 Block
+    # so using the huggingface GPT2 Block instead
     self.h = nn.ModuleList([
-      Block(transconfig.n_ctx, transconfig, scale=True)
+      Block(self.transconfig.n_ctx, self.transconfig, scale=True)
       for _ in range(n_layers)
     ])
 
-  def forward(self, x: torch.Tensor, output_attentions = False):
+  def forward(self, x: torch.Tensor, attn_mask = None, output_attentions = False):
     hidden_states = x
     for blk in self.h:
       output = blk(
         hidden_states,
-        attention_mask=self.attn_mask,
+        attention_mask=self.attn_mask if attn_mask is None else attn_mask,
         output_attentions=output_attentions,
       )
       hidden_states = output[-1]
@@ -134,6 +133,7 @@ class DallE(nn.Module):
   def __init__(self, vae, transformer_config):
     super().__init__()
     self.vae = vae
+    self.vae.requires_grad_ = False
 
     # transformer
     tconf = transformer_config
@@ -149,7 +149,7 @@ class DallE(nn.Module):
       n_embd=tconf.n_embd,
       n_layers=tconf.n_layers,
       n_heads=tconf.n_heads,
-      attn_mask=self.build_attention_mask()
+      attn_mask=None
     )
     self.image_head = nn.Sequential(
       nn.LayerNorm(tconf.n_embd),
@@ -159,36 +159,48 @@ class DallE(nn.Module):
   def build_attention_mask(self):
       # lazily create causal attention mask, with full attention between the vision tokens
       # pytorch uses additive attention mask; fill with -inf
-      mask = torch.empty(self.context_length, self.context_length)
-      mask.fill_(-1e6) # some shit happens with float("-inf")
-      mask.triu_(1)    # zero out the lower diagonal
+      mask = torch.ones(self.context_length, self.context_length) * -1e6
+      # mask.fill_(-1e6) # nan happens with float("-inf")
+      mask.triu_(1)      # zero out the lower diagonal
       return mask.unsqueeze(0).unsqueeze(0)
 
-  def forward(self, text_tokens, images, recons = False, loss = False):
+  def forward(self, text_tokens, images, attn_mask = None, recons = False, loss = False):
     """
     text_tokens: [B, t],
     images: [B, 3, res, res]
     """
     config = self.tconf
-    image_tokens = self.vae._encode_image(images) # [B,i]
+    with torch.no_grad():
+      image_tokens = self.vae._encode_image(images) # [B,i]
+    # print("image_tokens", image_tokens)
     text_tokens = text_tokens + config.image_vocab_size # increment because the image tokens are priority
+    # print("text_tokens:", text_tokens)
     tokens = torch.cat([text_tokens, image_tokens], dim = -1) # [B,t] + [B,i] = [B,M]
+    # print("tokens:",tokens)
     embed = self.token_embedding(tokens) + self.positional_encoding # [B,M,e]
+    # print("embed:", embed)
+    
+    if attn_mask is not None:
+      attn_mask = attn_mask.view(embed.size(0), -1)
+      attn_mask = attn_mask[:, None, None, :]
+      attn_mask = (1.0 - attn_mask) * -10000.0
+    else:
+      attn_mask = self.build_attention_mask().to(embed.device)
+    # print(attn_mask)
 
     # transformer blocks return tuple [hidden_states, present, (attentions, cross_attentions)]
-    out = self.transformer(embed)[0] # [B,M,e]
+    out = self.transformer(x = embed, attn_mask = attn_mask)[0] # [B,M,e]
     out = self.image_head(out) # [B,M,vi]
     output = [out]
 
     if loss:
-      logits = out[:, :-1].contiguous().view(-1, config.image_vocab_size)
-      
       # note that we do not need to calculate loss for the entire sequence but only for the image tokens
       # so the labels are -100 for text_tokens and image_tokens concatenated
       labels = torch.cat([
         torch.ones_like(text_tokens).long() * -100,
         image_tokens
       ], dim = -1)[:, 1:].contiguous().view(-1)
+      logits = out[:, :-1].contiguous().view(-1, config.image_vocab_size)
       loss = F.cross_entropy(logits, labels, ignore_index=-100)
       output = [out, loss]
 
@@ -297,13 +309,19 @@ class DallETrainer():
   def train(
     self, batch_size, n_epochs, lr, folder_path, skip_steps,
     test_every=500, test_batch_size=None, patience=5,
-    gradient_accumulation_steps=1.,
+    gradient_accumulation_steps: int=1,
   ):
     model = self.model
     train_data = self.train_dataset
     test_data = self.test_dataset
     epoch_step = len(train_data) // batch_size + int(len(train_data) % batch_size != 0)
-    optim = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # VAE is not to be optimised, named_parameters() gives more control
+    optim = torch.optim.Adam(
+      (p for n, p in dalle.named_parameters() if "vae" not in n),
+      lr=lr
+    )
+
     gs = 0                 # global step counter
     train_losses = [-1]    # list with values of training losses at each step
     do_skip = True         # flag for one time skipping steps during training
@@ -312,6 +330,10 @@ class DallETrainer():
     break_training = False # flag is set when we run out of patience and want to break
                            # training for outer loop as well
     model.train()          # set model to training mode
+    
+    if gradient_accumulation_steps > 1:
+      eff_batch_size = gradient_accumulation_steps * batch_size
+      print(":: Due to presence of gradient_accumulation_steps effective size:", eff_batch_size)
 
     for epoch in range(n_epochs):
       # ----- train for one complete epoch
@@ -320,7 +342,7 @@ class DallETrainer():
           batch_size=batch_size,
           pin_memory=True,    # for CUDA
           shuffle=True,       # of course, my stupid ass didn't do it for first 74 runs
-          num_workers=1       # number of workers for parallel loading
+          num_workers=8       # number of workers for parallel loading
       )
       pbar = trange(epoch_step)
 
@@ -360,7 +382,7 @@ class DallETrainer():
             batch_size=test_batch_size, # testing can run larger batches
             pin_memory=True,            # for CUDA
             shuffle=False,              # to ensure we can see the progress being made
-            num_workers=1               # number of workers for parallel loading
+            num_workers=8               # number of workers for parallel loading
           )
           model.eval() # convert model to testing mode
 
@@ -419,29 +441,55 @@ class DallETrainer():
     # ------ training loop ends
 
 
-def init_weights(module):
-  if isinstance(module, (nn.Linear, nn.Embedding)):
-    module.weight.data.normal_(mean=0.0, std=0.2)
-    if isinstance(module, nn.Linear) and module.bias is not None:
-      module.bias.data.zero_()
-  elif isinstance(module, (nn.LayerNorm)):
-    module.bias.data.zero_()
-    module.weight.data.fill_(1.0)
+def init_weights(dalle, v=False):
+  # function to initiliase the parameters, .apply() has some problems like
+  # you cannot find the exact name and so there might be a "Linear" in part
+  # of network you do not want to modify. This looped approach gives a much
+  # better control over what happens
+  for n, p in dalle.named_parameters():
+    if "vae" in n:
+      # we do not want to reinit VAE
+      continue
+
+    m0 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
+    if "weight" in n and "ln_" not in n:
+      # this is linear weight
+      p.data.normal_(mean=0.0, std=0.2)
+
+    # layer norm
+    elif "ln_" in n:
+      if "bias" in n:
+        p.data.zero_()
+      else:
+        p.data.fill_(1.0)
+
+    elif "positional_encoding" in n:
+      # this is the positional encoding that was giving nightmares
+      # if you do not initialise it the network passes the `torch.empty()`
+      # through the network without giving a warning and keeps returning
+      # nan.
+      p.data.normal_(mean=0.0, std=0.2)
+
+    elif "bias" in n:
+      p.data.zero_()
+
+    m1 = f"{p.mean().item():.3f}, {p.std().item():.3f}"
+    if v: print(n, "\t", m0, "\t", m1)
 
 
 if __name__ == "__main__":
   args = ArgumentParser(description= "train DallE transformer model")
-  args.add_argument("--vqvae", type=str, default="./models/vqvae3_128_325_3025_0_ckpt_28800.pt", help = "path to the VQVAE_v3 model file")
+  args.add_argument("--vqvae", type=str, default="./vqvae3_128_325_3025_0_ckpt_30600.pt", help = "path to the VQVAE_v3 model file")
   args.add_argument("--tokenizer", type=str, default="../tokenizer.json", help = "path to the tokenizer")
   args.add_argument("--captions", type=str, default="../captions_train.json", help = "path to captions file")
-  args.add_argument("--text_context_len", type=int, default=64, help = "number of tokens in the text")
-  args.add_argument("--n_embd", type = int, default = 480, help = "embedding dimension of the model")
+  args.add_argument("--text_context_len", type=int, default=128, help = "number of tokens in the text")
+  args.add_argument("--n_embd", type = int, default = 576, help = "embedding dimension of the model")
   args.add_argument("--n_layers", type = int, default = 12, help = "number of attention layers")
   args.add_argument("--n_heads", type = int, default = 12, help = "number of heads in MHA")
-  args.add_argument("--batch_size", type = int, default = 12, help = "minibatch size")
+  args.add_argument("--batch_size", type = int, default = 20, help = "minibatch size")
   args.add_argument("--n_epochs", type = int, default = 2, help = "number of epochs to train for")
   args.add_argument("--lr", type = int, default = 1e-5, help = "learning rate")
-  args.add_argument("--gas", type = int, default = 1, help = "gradient accumulation steps")
+  args.add_argument("--gas", type = int, default = 20, help = "gradient accumulation steps")
   args.add_argument("--seed", type=int, default=3, help="seed value") # 3 = my misha
   args.add_argument("--test_every", type=int, default=2, help="test every this steps")
   args.add_argument("--patience", type=int, default=5, help="stop training if no improvement in this steps")
@@ -455,7 +503,7 @@ if __name__ == "__main__":
   print(f":: Will Save data in {folder_path}")
   os.makedirs(folder_path, exist_ok=True)
 
-  train_split = 0.3
+  train_split = 0.9995
   train_split = DallECaptions.get_split(
       captions_file=args.captions, train_split=train_split)
   dallecaptions_train = DallECaptions(
@@ -493,8 +541,8 @@ if __name__ == "__main__":
     n_heads=args.n_heads
   )
   dalle = DallE(model.get_model(), transformer_config)
+  init_weights(dalle)
   print(":: Number of params:", sum(p.numel() for p in dalle.parameters()))
-  # print(dalle)
 
   # define the trainer
   trainer = DallETrainer(dallecaptions_train, dallecaptions_test, dalle)
