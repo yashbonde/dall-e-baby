@@ -80,6 +80,7 @@ def get_open_images_label_names():
     open_image_labels = {x.split(",")[0]: x.split(",")[1] for x in f.read().split("\n") if len(x)}
   return open_image_labels
 
+
 def get_open_images_labels(annotations_path):
   open_image_labels = get_open_images_label_names()
   df = pd.read_csv(annotations_path)
@@ -91,17 +92,23 @@ def get_open_images_labels(annotations_path):
     path_f += "validation/"
   elif "train" in annotations_path:
     path_f += "train-256/"
+  elif "test" in annotations_path:
+    path_f += "test/"
   for _, (img_id, df_sub) in zip(pbar, df.groupby("ImageID")):
-    sub_labels = df_sub[df_sub.Confidence == 1].LabelName.values.tolist()
-    if not sub_labels:
+    path = f"{path_f}{img_id}.jpg"
+    pbar.set_description(f"Loading {path[::-1][:40][::-1]}")
+    high_conf = df_sub[df_sub.Confidence == 1].LabelName.values.tolist()
+    low_conf = df_sub[df_sub.Confidence != 1].LabelName.values.tolist()
+    if not high_conf or not os.path.exists(path):
       dropped.append(img_id)
     image_to_labels["open_images_" + img_id] = {
-      "label": [open_image_labels[x] for x in sub_labels],
-      "path": f"{path_f}{img_id}.jpg"
+      "label": [
+          [open_image_labels[x] for x in high_conf],
+          [open_image_labels[x] for x in low_conf]
+      ],
+      "path": path
     }
-
   return image_to_labels, dropped
-
 
 def get_indoor_cvpr(rf= "../indoor/"):
   indoor = get_images_in_folder(rf)
@@ -210,6 +217,13 @@ class CaptionGenerator():
     "{} rendered in a picture",
   ]
 
+  templates_maybe = [
+    *[x + " and maybe a picture containing {}" for x in templates_labels],
+    *[x + " and possibly containing {}" for x in templates_labels],
+    *[x + " and {} but not sure" for x in templates_labels],
+    *[x + " also roughly {}" for x in templates_labels],
+  ]
+
   templates_indoor = [
     "indoor picture of {}",
     "picture inside of {}",
@@ -236,7 +250,7 @@ class CaptionGenerator():
   ]
 
   captions_templates = {
-    "open_images": [templates_labels],
+    "open_images": [templates_labels, templates_maybe],
     "indoor": [templates_labels, templates_indoor],
     "food": [templates_labels, templates_food],
     "svhn": [templates_svhn],
@@ -245,12 +259,34 @@ class CaptionGenerator():
   
   def __init__(self):
     self.ds_names = list(self.captions_templates.keys())
+
+  def generate_open_images_caption(self, ds):
+    temps_high, temps_low = self.captions_templates["open_images"]
+    captions = {}
+    for i,k in enumerate(ds):
+      high_conf = ", ".join(ds[k]["label"][0])
+      if np.random.random() > 0.5:
+        low_conf = ", ".join(ds[k]["label"][1])
+        temp = np.random.choice(temps_low, size=1)
+        cap = temp.format(high_conf, low_conf)
+      else:
+        temp = np.random.choice(temps_high, size = 1)
+        cap = temp.format(high_conf)
+      cap = re.sub(r"\s+", " ", cap).strip().lower()
+      captions["open_images_" + str(k)] = {
+          "path": ds[k]["path"],
+          "caption": cap
+      }
+    return captions
   
   def generate_captions(self, ds, ds_name):
     print("Generating captions for", ds_name)
     if ds_name not in self.ds_names:
       raise ValueError(f"{ds_name} not in {self.ds_names}")
-    
+
+    if ds_name == "open_images":
+      return self.generate_open_images_caption(ds)
+
     temps = []
     for temp in self.captions_templates[ds_name]:
       temps.extend(temp)
@@ -370,6 +406,5 @@ if __name__ == "__main__":
   common_captions.update(captions_flickr)
 
   print(len(common_captions), table[-1][1])
-  assert len(common_captions) == table[-1][1]
   with open("../captions_train.json", "w") as f:
     f.write(json.dumps(common_captions))
