@@ -20,7 +20,7 @@ def get_coco_captions(captions_path):
   for x in cap2017["annotations"]:
     id_ = str(x["image_id"])
     id_ = "0"*(12-len(id_))+id_
-    path = "../coco/train2017/"+id_+".jpg"
+    path = "../fast-ai-coco/train2017/"+id_+".jpg"
     if not os.path.exists(path):
       dropped.append(path)
       continue
@@ -82,7 +82,6 @@ def get_open_images_label_names():
 
 def get_open_images_labels(annotations_path):
   open_image_labels = get_open_images_label_names()
-  print("-->", annotations_path)
   df = pd.read_csv(annotations_path)
   image_to_labels = {}
   dropped = []
@@ -104,7 +103,7 @@ def get_open_images_labels(annotations_path):
   return image_to_labels, dropped
 
 
-def get_indoor_cvpr(rf= "../indoorCVPR/"):
+def get_indoor_cvpr(rf= "../indoor/"):
   indoor = get_images_in_folder(rf)
   img2label = {idx: {
     "label": [x.split("/")[2].replace("_", " ").title()],
@@ -248,6 +247,7 @@ class CaptionGenerator():
     self.ds_names = list(self.captions_templates.keys())
   
   def generate_captions(self, ds, ds_name):
+    print("Generating captions for", ds_name)
     if ds_name not in self.ds_names:
       raise ValueError(f"{ds_name} not in {self.ds_names}")
     
@@ -272,8 +272,8 @@ class CaptionGenerator():
 # ---- Script
 if __name__ == "__main__":
   print("-"*70 + "\n:: Loading COCO dataset")
-  coco_train, coco_droppped_train = get_coco_captions("../coco/annotations/captions_train2017.json")
-  coco_val, coco_droppped_val = get_coco_captions("../coco/annotations/captions_val2017.json")
+  coco_train, coco_droppped_train = get_coco_captions("../fast-ai-coco/annotations/captions_train2017.json")
+  coco_val, coco_droppped_val = get_coco_captions("../fast-ai-coco/annotations/captions_val2017.json")
 
   print("-"*70 + "\n:: Loading Visual Genome dataset")
   genome_captions, dropped_genome = get_genome_captions()
@@ -319,23 +319,27 @@ if __name__ == "__main__":
     ["SVHN", len(img2label_svhn), len(dropped_svhn)],
   ]
   table_arr = np.asarray(table)
-  total_samples = sum([len(coco_train),
-                       len(coco_val),
-                       len(genome_captions),
-                       len(open_images_img2lab_train),
-                       len(open_images_img2lab_val),
-                       len(open_images_img2lab_test),
-                       len(img2label_indoor),
-                       len(img2label_food),
-                       len(img2label_stl),
-                       len(img2label_svhn)])
-  total_dropped = sum([len(coco_droppped_train),
-                       len(coco_droppped_val),
-                       len(dropped_genome),
-                       len(oi_dropped_train),
-                       len(oi_dropped_val),
-                       len(oi_dropped_test),
-                       len(dropped_svhn)])
+  total_samples = sum([
+    len(coco_train),
+    len(coco_val),
+    len(genome_captions),
+    len(open_images_img2lab_train),
+    len(open_images_img2lab_val),
+    len(open_images_img2lab_test),
+    len(img2label_indoor),
+    len(img2label_food),
+    len(img2label_stl),
+    len(img2label_svhn)
+  ])
+  total_dropped = sum([
+    len(coco_droppped_train),
+    len(coco_droppped_val),
+    len(dropped_genome),
+    len(oi_dropped_train),
+    len(oi_dropped_val),
+    len(oi_dropped_test),
+    len(dropped_svhn)
+  ])
   table.append(["total", total_samples, total_dropped])
   print("\n", "-"*70, "\n")
   print(tabulate(table, headers, tablefmt="psql"))
@@ -365,6 +369,7 @@ if __name__ == "__main__":
   common_captions.update(genome_captions)
   common_captions.update(captions_flickr)
 
+  print(len(common_captions), table[-1][1])
   assert len(common_captions) == table[-1][1]
   with open("../captions_train.json", "w") as f:
     f.write(json.dumps(common_captions))

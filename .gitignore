@@ -8,3 +8,5 @@ wandb/
 models/
 cifar-10*
 transVAE*
+dalle*/
+compile_datasets.ipynb

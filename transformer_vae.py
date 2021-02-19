@@ -125,7 +125,7 @@ class Decoder(nn.Module):
 
     # different position embedding for different blocks
     self.pos_embd = [
-      nn.Parameter(torch.zeros(1, bottom_width ** 2, n_embd)),              # blocks
+      nn.Parameter(torch.zeros(1, bottom_width ** 2, n_embd)),             # blocks
       nn.Parameter(torch.zeros(1, (bottom_width * 2) ** 2, n_embd // 4)),  # upsample_blocks[0]
       nn.Parameter(torch.zeros(1, (bottom_width * 4) ** 2, n_embd // 16)), # upsample_blocks[1]
     ]
