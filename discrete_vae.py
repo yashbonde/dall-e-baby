@@ -295,8 +295,14 @@ class VQVAE_v3(nn.Module):
     encoding_ids = torch.argmax(softmax, dim=1).view(encoding.size(0), -1)
     return encoding_ids
 
-  def _decode_ids(self, softmax):
-    quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
+  def _decode_ids(self, softmax = None, image_tokens = None):
+    if softmax is not None:
+      quantized_inputs = einsum("bdhw,dn->bnhw", softmax, self.codebook.weight)
+    elif image_tokens is not None:
+      res = np.sqrt(image_tokens.shape[1]).astype(int)
+      bs = image_tokens.size(0)
+      quantized_inputs = self.codebook(image_tokens).view(bs, res, res, -1)
+      quantized_inputs = quantized_inputs.permute((0, 3, 1, 2))
     recons = self.decoder(quantized_inputs)
     return recons
 
@@ -426,7 +432,6 @@ class DiscreteVAETrainer:
         loss = loss / gradient_accumulation_steps
         loss.backward()
         if gs and gs % gradient_accumulation_steps == 0:
-          optim.zero_grad()
           torch.nn.utils.clip_grad_norm_(model.parameters(), 1.5)
           optim.step()
         gs += 1
