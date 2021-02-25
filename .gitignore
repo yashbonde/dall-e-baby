@@ -10,3 +10,4 @@ cifar-10*
 transVAE*
 dalle*/
 compile_datasets.ipynb
+public/

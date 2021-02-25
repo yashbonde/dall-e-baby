@@ -91,4 +91,3 @@ if __name__ == "__main__":
       "paths": this_image_paths,
       "prompt": input_prompt
     } # update cache for storing information
-g
