@@ -340,12 +340,13 @@ class Dalle():
 
   
   @staticmethod
-  def parse_name(model_path, text_context_len, image_vocab_size, text_vocab_size):
+  def parse_name(model_path, image_vocab_size, text_vocab_size):
     # folder_path = f"./dalle_{vqvae_arch.input_res}_{args.n_embd}_"
-    #   "{args.n_layers}_{args.n_heads}_{args.batch_size}/dalle_{gs}.pt"
+    #   "{args.n_layers}_{args.n_heads}_{args.batch_size}_{args.text_context_len}/dalle_{gs}.pt"
     gs = int(model_path.split("/")[-1].split("_")[-1].split(".")[0])
     arch = model_path.split("/")[-2]
     res = int(arch.split("_")[1])
+    text_context_len = int(arch.split("_")[6])
     return SimpleNamespace(
       model_path=model_path,
       _gs = gs,
