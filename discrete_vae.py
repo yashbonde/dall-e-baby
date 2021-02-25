@@ -287,7 +287,9 @@ class VQVAE_v3(nn.Module):
 
   def _encode_image(self, input):
     encoding = self.encoder(input)
+    print("!@#!@#", encoding.size())
     softmax = F.softmax(encoding, dim=1)
+    print(softmax.size())
     softmax = F.one_hot(
         torch.argmax(softmax, dim=1),
         num_classes=softmax.size(1)

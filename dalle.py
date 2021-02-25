@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from argparse import ArgumentParser
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+
+from generation import GenerationMixin
 from discrete_vae import VQVAE_v3, transforms, set_seed
 
 from transformers import GPT2Config
@@ -220,7 +222,7 @@ class Transformer(nn.Module):
     return [hidden_states]
 
 
-class DallETransformer(nn.Module):
+class DallETransformer(nn.Module, GenerationMixin):
   def __init__(self, vae, transformer_config):
     super().__init__()
     self.vae = vae
@@ -247,15 +249,16 @@ class DallETransformer(nn.Module):
       nn.Linear(tconf.n_embd, tconf.image_vocab_size)
     )
 
-  def build_attention_mask(self):
-      # lazily create causal attention mask, with full attention between the vision tokens
-      # pytorch uses additive attention mask; fill with -inf
-      mask = torch.ones(self.context_length, self.context_length) * -1e6
-      # mask.fill_(-1e6) # nan happens with float("-inf")
-      mask.triu_(1)      # zero out the lower diagonal
-      return mask.unsqueeze(0).unsqueeze(0)
+  def build_attention_mask(self, _len = None):
+    _len = self.context_length if _len is None else _len
+    # lazily create causal attention mask, with full attention between the vision tokens
+    # pytorch uses additive attention mask; fill with -inf
+    mask = torch.ones(_len, _len) * -1e6
+    # mask.fill_(-1e6) # nan happens with float("-inf")
+    mask.triu_(1)      # zero out the lower diagonal
+    return mask.unsqueeze(0).unsqueeze(0)
 
-  def forward(self, text_tokens, images = None, image_tokens=None, attn_mask = None, recons = False, loss = False):
+  def forward(self, text_tokens, images = None, image_tokens=None, attn_mask = None, recons = False, loss = False, **kwargs):
     """this model automanages the text tokens by incrementing to the correct vocab"""
     config = self.config
     no_image = True
@@ -274,15 +277,19 @@ class DallETransformer(nn.Module):
     else:
       tokens = torch.cat([text_tokens, image_tokens], dim = -1) # [B,t] + [B,i] = [B,M]
 
-    total_gen = tokens.shape[1]
-    embed = self.token_embedding(tokens) + self.positional_encoding[:total_gen, :] # [B,M,e]
+    # print(text_tokens.size(), image_tokens.size(), tokens.size())
 
+    total_gen = tokens.shape[1]
+    print(tokens.size())
+    # print(self.positional_encoding[:total_gen+1, :].size())
+    embed = self.token_embedding(tokens) + self.positional_encoding[:total_gen, :] # [B,M,e]
+ 
     if attn_mask is not None:
       attn_mask = attn_mask.view(embed.size(0), -1)
       attn_mask = attn_mask[:, None, None, :]
       attn_mask = (1.0 - attn_mask) * -10000.0
     else:
-      attn_mask = self.build_attention_mask().to(embed.device)
+      attn_mask = self.build_attention_mask(tokens.size(1)).to(embed.device)
 
     # transformer blocks return tuple [hidden_states, present, (attentions, cross_attentions)]
     out = self.transformer(x = embed, attn_mask = attn_mask)[0] # [B,M,e]
