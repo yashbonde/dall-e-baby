@@ -4,12 +4,17 @@ import os
 import json
 import torch
 import hashlib
+import numpy as np
 from PIL import Image
 from argparse import ArgumentParser
 
 from dalle import DallETransformer, Dalle, Vqvae, set_seed, Tokenizer
 
 md5 = lambda x: hashlib.md5(x.encode("utf-8")).hexdigest()
+
+def toImage(x):
+  print(x.size())
+  return (x.numpy() * 255).astype(np.uint8)[0].transpose((1, 2, 0))
 
 if __name__ == "__main__":
   args = ArgumentParser(description="Generate image using dall-e-baby")
@@ -49,10 +54,12 @@ if __name__ == "__main__":
   )
   dalle = DallETransformer(vqvae.get_model(), dalle_args)
   map_location = "cpu" if not torch.cuda.is_available() else "cuda"
+  print(f": Loading model to {map_location}")
   dalle.load_state_dict(torch.load(
       args.dalle_path,
       map_location=map_location
   ))
+  dalle = dalle.to(map_location)
   dalle.eval()
 
   print(f"Loaded the model, entering loop. Saving images in {folder_path}")
@@ -66,15 +73,16 @@ if __name__ == "__main__":
 
     cap = input_prompt.lower() * 100
     text_tokens = tok.encode(cap).ids[:dalle_args.text_context_len - 1] + [text_end_id]
+    text_tokens = torch.Tensor(text_tokens).unsqueeze(0).long().to(map_location)
 
     print("Starting Generation (Scratch)", "-"*70)
     output_images, scores = dalle.complete_image(
       text_tokens=text_tokens,
-      num_return_sequences=3,
+      num_return_sequences=20,
       top_k = 5,
       top_p = 0.95,
       temperature=0.95,
-      _verbose = True
+      _verbose = False
     )
 
     # define the unique hash, iterate in case such a prompt already exists
@@ -87,9 +95,9 @@ if __name__ == "__main__":
 
     # save the images
     this_image_paths = []
-    for o,s in zip(output_images, scores):
-      path = os.path.join(folder_path, f"{_hash}_{s:.4f}.jpg")
-      img = Image.fromarray(o.numpy())
+    for idx, (o,s) in enumerate(zip(output_images, scores)):
+      path = os.path.join(folder_path, f"{_hash}_{idx}_{s:.4f}.jpg")
+      img = toImage(o.cpu())
       img.save(path)
       this_image_paths.append(path)
     meta_cache[_hash] = {
