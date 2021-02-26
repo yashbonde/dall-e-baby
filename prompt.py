@@ -23,11 +23,16 @@ if __name__ == "__main__":
   folder_path = os.path.expanduser(args.folder)
   os.makedirs(folder_path, exist_ok=True)
 
-  meta_cache = os.path.join(folder_path, "generated_meta.json")
-  with open(meta_cache, "w" if not os.path.exists(meta_cache) else "r") as f:
-    meta_cache = json.load(f)
+  meta_cache_path = os.path.join(folder_path, "generated_meta.json")
+  mode = "w" if not os.path.exists(meta_cache_path) else "r"
+  with open(meta_cache_path, mode) as f:
+    try:
+      if mode == "r":
+        meta_cache = json.load(f)
+    except:
+      meta_cache = {}
 
-  vqvae = Vqvae(args.vqvae)
+  vqvae = Vqvae(args.vqvae_path)
   set_seed(args.seed)
 
   # load the tokenizer
@@ -55,7 +60,7 @@ if __name__ == "__main__":
     # continue in the loop so user can keep using this
     input_prompt = input("('q' to exit) >>> ")
     if input_prompt.lower() in ["q"]:
-      with open(meta_cache, "w") as f:
+      with open(meta_cache_path, "w") as f:
         f.write(json.dumps(meta_cache))
       break
 

@@ -291,7 +291,8 @@ class VQVAE_v3(nn.Module):
     softmax = F.softmax(encoding, dim=1)
     print(softmax.size())
     softmax = F.one_hot(
-        torch.argmax(softmax, dim=1),
+        torch.argmax(
+          softmax, dim=1),
         num_classes=softmax.size(1)
     ).permute((0, 3, 1, 2)).float()
     encoding_ids = torch.argmax(softmax, dim=1).view(encoding.size(0), -1)

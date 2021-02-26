@@ -277,11 +277,7 @@ class DallETransformer(nn.Module, GenerationMixin):
     else:
       tokens = torch.cat([text_tokens, image_tokens], dim = -1) # [B,t] + [B,i] = [B,M]
 
-    # print(text_tokens.size(), image_tokens.size(), tokens.size())
-
     total_gen = tokens.shape[1]
-    print(tokens.size())
-    # print(self.positional_encoding[:total_gen+1, :].size())
     embed = self.token_embedding(tokens) + self.positional_encoding[:total_gen, :] # [B,M,e]
  
     if attn_mask is not None:
@@ -343,8 +339,8 @@ class Dalle():
   def parse_name(model_path, image_vocab_size, text_vocab_size):
     # folder_path = f"./dalle_{vqvae_arch.input_res}_{args.n_embd}_"
     #   "{args.n_layers}_{args.n_heads}_{args.batch_size}_{args.text_context_len}/dalle_{gs}.pt"
-    gs = int(model_path.split("/")[-1].split("_")[-1].split(".")[0])
-    arch = model_path.split("/")[-2]
+    gs = int(model_path.split("_")[-1].split(".")[0])
+    arch = model_path.split("/")[-1]
     res = int(arch.split("_")[1])
     text_context_len = int(arch.split("_")[6])
     return SimpleNamespace(
